@@ -59,3 +59,9 @@ local.settings.json
 
 ## Visual Studio solution user state for the new .slnx format
 *.slnx.user
+
+## Ready-made builds (see shared/docs/04-setup-and-connect.md). The rule above ignores every
+## release/ folder; this one is deliberate distribution output, stored through Git LFS
+## (.gitattributes) because the executables exceed GitHub's 100 MB file limit.
+!artifacts/release/
+artifacts/release/**/*.pdb

@@ -1,0 +1,4 @@
+# Release binaries are too large for plain git (GitHub rejects files over 100 MB), so they are
+# stored in Git LFS. Scoped to artifacts/release/ only: nothing else in the repo uses LFS.
+artifacts/release/**/*.exe filter=lfs diff=lfs merge=lfs -text
+artifacts/release/**/*.apk filter=lfs diff=lfs merge=lfs -text
