@@ -6,7 +6,6 @@
 x64/
 x86/
 [Aa][Rr][Mm]64/
-artifacts/
 *.user
 *.suo
 *.userosscache

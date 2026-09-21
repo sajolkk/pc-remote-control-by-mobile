@@ -9,12 +9,35 @@ Everything happens on your own network. There is no account, cloud service or po
 
 ---
 
+## Quick start with the ready-made builds
+
+Both halves are already built in this repository. Nothing needs compiling to try it:
+
+| For | File | Size |
+|---|---|---|
+| PC (Windows 10/11, x64) | folder [`artifacts/release/PC-Remote/`](../../artifacts/release/PC-Remote) — `RemoteAgent.Service.exe` + `RemoteAgent.Session.exe` | ~305 MB |
+| Phone (Android, 64-bit) | [`artifacts/release/Android/PC-Remote.apk`](../../artifacts/release/Android/PC-Remote.apk) | 66 MB |
+
+In five steps:
+
+1. Copy the `PC-Remote` folder to the PC, e.g. to `C:\Program Files\PC-Remote` (§1.1).
+2. In an **administrator** PowerShell there, run `.\RemoteAgent.Service.exe --install` (§1.2).
+3. Install `PC-Remote.apk` on the phone (§2.1).
+4. PC tray icon → **Allow pairing and show QR code**; phone → **Devices → Pair a PC** → scan →
+   approve on the PC (Part 3).
+5. Tap the PC in **Devices**, then open the **Screen** tab (Part 4).
+
+The rest of this document explains each step, how to build from source instead, and what to do
+when something does not work.
+
+---
+
 ## What you need
 
 | | Requirement |
 |---|---|
 | PC | Windows 10 1809 or later, or Windows 11, x64 or ARM64 |
-| Phone | Android (a recent version) or iOS |
+| Phone | Android with a **64-bit (arm64) processor** for the ready-made APK — practically every phone from the last seven years; iOS only by building it yourself |
 | Network | PC and phone on the **same Wi-Fi / LAN**, with the network set to **Private** on the PC |
 | To build from source | .NET 10 SDK on the PC; Flutter 3.44 (Dart 3.12) for the app |
 
@@ -24,14 +47,25 @@ The target PC needs no .NET runtime. The published executables are self-containe
 
 ## Part 1 — Set up the PC
 
-### 1.1 Build the two executables
+### 1.1 Get the two executables onto the PC
 
 PC-Remote is two programs that must sit **in the same folder**:
 
 - `RemoteAgent.Service.exe` — the always-on background service
 - `RemoteAgent.Session.exe` — the agent that runs on your desktop (tray icon, screen, apps)
 
-From the repository root, publish both into one folder:
+**Using the ready-made build.** Copy the whole folder
+[`artifacts/release/PC-Remote/`](../../artifacts/release/PC-Remote) to the PC. `C:\Program Files\PC-Remote`
+is a good permanent home: copying there asks for administrator approval, which is what keeps
+other users from replacing the executables. The `.pdb` files beside them are debugging symbols;
+they are harmless and can be deleted.
+
+The executables are self-contained x64 builds, so the PC needs no .NET installed. They are
+**not code-signed** yet, so the first time you run one, Windows SmartScreen may show *"Windows
+protected your PC"*. Choose **More info → Run anyway**. Only do that for files you copied from
+this repository yourself.
+
+**Building it yourself instead.** From the repository root, publish both into one folder:
 
 ```powershell
 dotnet publish windows/RemoteAgent.Service/RemoteAgent.Service.csproj -c Release -r win-x64 -o C:\PCRemote
@@ -50,8 +84,11 @@ is a better long-term home.
 when you sign out, and restarts itself if it crashes. From an **administrator** PowerShell:
 
 ```powershell
-C:\PCRemote\RemoteAgent.Service.exe --install
+cd "C:\Program Files\PC-Remote"
+.\RemoteAgent.Service.exe --install
 ```
+
+To open an administrator PowerShell: Start menu → type *PowerShell* → **Run as administrator**.
 
 This registers and starts the service. It also adds three Windows Firewall rules, each limited to
 **Private** networks and to PC-Remote's own executables:
@@ -62,13 +99,16 @@ This registers and starts the service. It also adds three Windows Firewall rules
 | PC-Remote discovery (UDP) | 47801 | Lets the phone find the PC automatically |
 | PC-Remote screen streaming (UDP) | 47810–47850 | The live screen video |
 
+**Keep the folder where it is after installing.** The service runs the executable from that exact
+path; moving or deleting the folder breaks it. To move it: `--uninstall`, move, `--install` again.
+
 To remove it later: `RemoteAgent.Service.exe --uninstall`. That also removes the firewall rules;
 your settings and pairings are kept.
 
 **Option B — run without installing (for trying it out).**
 
 ```powershell
-C:\PCRemote\RemoteAgent.Service.exe --console
+& "C:\Program Files\PC-Remote\RemoteAgent.Service.exe" --console
 ```
 
 It runs until you close the window and logs to the console. No firewall rules are added, so the
@@ -104,28 +144,75 @@ phone will not be able to connect.
 
 ## Part 2 — Set up the phone
 
-### Android
+### 2.1 Android — install the ready-made APK
 
-Build the app and install it with the phone connected by USB (USB debugging enabled):
+The file is [`artifacts/release/Android/PC-Remote.apk`](../../artifacts/release/Android/PC-Remote.apk)
+(66 MB), next to the PC build. It is a copy of Flutter's own output,
+`mobile/remote_control_app/build/app/outputs/flutter-apk/app-release.apk`, placed there because
+`build/` is git-ignored and editors tend to hide it. Two ways to get it onto the phone:
+
+**Without a cable**
+
+1. Copy `PC-Remote.apk` to the phone — by USB file transfer, Google Drive, Telegram "Saved
+   Messages", or any way you like.
+2. On the phone, open the file (from **Files** / **Downloads**).
+3. Android asks whether to allow installing from that app (Files, Chrome, Drive…). Tap
+   **Settings → Allow from this source**, go back, and tap **Install**.
+4. Play Protect may warn that the app is from an unknown developer. Choose **Install anyway**. The
+   APK is signed with a development key, not a Play Store key, which is why the warning appears.
+
+**With a USB cable** (USB debugging enabled on the phone):
+
+```powershell
+adb install -r artifacts\release\Android\PC-Remote.apk
+```
+
+`-r` replaces an older version while keeping the app's pairing data.
+
+About this APK:
+
+- **64-bit phones only (arm64).** Nearly every Android phone from the last seven years qualifies.
+  A very old 32-bit phone reports "App not installed", and needs an APK built without
+  `--target-platform android-arm64`.
+- **Signed with the debug key.** Fine for your own phones. Publishing to the Play Store needs a
+  proper release signing key, which is not set up yet.
+- **Updating later:** install the new APK over the old one. Pairings survive. Uninstalling the app
+  deletes its identity, so the phone must be paired again.
+
+### 2.2 Android — build the APK yourself
 
 ```powershell
 cd mobile/remote_control_app
-flutter build apk --release
-flutter install
+flutter build apk --release --target-platform android-arm64
 ```
 
-Or copy `build\app\outputs\flutter-apk\app-release.apk` to the phone and open it. You will need to
-allow installing from that source.
+The result lands in `build\app\outputs\flutter-apk\app-release.apk`. With a phone connected,
+`flutter install --release` builds and installs in one step.
 
-> Low on disk space on C:? Point Gradle's cache elsewhere first:
-> `$env:GRADLE_USER_HOME = "E:\my\pc-control\.gradle-home"`.
+> **On a PC that is short of memory**, the release build can die with *"Gradle build daemon
+> disappeared unexpectedly"* or *"insufficient memory for the Java Runtime Environment"*. Release
+> builds run R8 shrinking and need noticeably more memory than debug builds. What worked here:
+>
+> - put Gradle's cache off a full C: drive: `$env:GRADLE_USER_HOME = "E:\my\pc-control\.gradle-home"`;
+> - in that folder's `gradle.properties`, lower the heap and parallelism for this machine only:
+>
+>   ```properties
+>   org.gradle.jvmargs=-Xmx1024m -XX:MaxMetaspaceSize=512m -XX:ReservedCodeCacheSize=128m
+>   org.gradle.daemon=false
+>   org.gradle.parallel=false
+>   org.gradle.workers.max=1
+>   kotlin.compiler.execution.strategy=in-process
+>   ```
+>
+> - build for arm64 only, as above;
+> - close browsers during the build if it still fails.
 
-### iOS
+### 2.3 iOS
 
 Open `mobile/remote_control_app/ios/Runner.xcworkspace` in Xcode on a Mac, pick your team for
 signing, and run it on the device. iOS has not been tested yet.
 
-### Permissions the app asks for
+### 2.4 Permissions the app asks for
 
 - **Camera** — only to scan the pairing QR code.
 - **Local network** (iOS) — to find the PC on your Wi-Fi.
@@ -187,6 +274,8 @@ what this phone currently has.
 
 | Symptom | Likely cause and fix |
 |---|---|
+| "Windows protected your PC" when starting the `.exe` | SmartScreen: the executables are not code-signed yet. **More info → Run anyway** (§1.1) |
+| Phone says "App not installed" | A 32-bit-only phone (the APK is arm64), or a copy of the app signed with a different key is already installed. Uninstall the old app first; this also removes its pairings |
 | The PC does not appear in **Devices** | Phone and PC on different networks (e.g. a guest Wi-Fi), or the PC's network set to **Public**. Fix the network profile (§1.4). Some routers block devices from seeing each other ("AP/client isolation"); turn that off |
 | No tray icon | The two executables are not in the same folder, or no one is signed in. Check the logs (§1.3) |
 | QR scan says it cannot reach the PC | Firewall: install with `--install`, or allow the prompt in console mode, and check the network is Private |
