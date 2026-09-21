@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    End-to-end tests that drive the real TLS listener with a real client.
+
+    These exist because the security properties of this system are emergent: the pairing rules, the
+    certificate pinning, the session-token binding and the authorization gate are each unit tested,
+    but "an unpaired device cannot run a command" is only true if all of them compose correctly. The
+    only way to check that is to speak the actual protocol over an actual socket.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>$(WindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(WindowsPlatformFloor)</SupportedOSPlatformVersion>
+    <RootNamespace>RemoteAgent.Integration.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\RemoteAgent.Protocol\RemoteAgent.Protocol.csproj" />
+    <ProjectReference Include="..\..\RemoteAgent.Core\RemoteAgent.Core.csproj" />
+    <ProjectReference Include="..\..\RemoteAgent.Security\RemoteAgent.Security.csproj" />
+    <ProjectReference Include="..\..\RemoteAgent.Service\RemoteAgent.Service.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

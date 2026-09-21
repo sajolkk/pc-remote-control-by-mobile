@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/RemoteAgent.Integration.Tests/RemoteAgent.Integration.Tests.csproj" />
+    <Project Path="tests/RemoteAgent.Protocol.Tests/RemoteAgent.Protocol.Tests.csproj" />
+    <Project Path="tests/RemoteAgent.Streaming.Tests/RemoteAgent.Streaming.Tests.csproj" />
+  </Folder>
+  <Project Path="RemoteAgent.Core/RemoteAgent.Core.csproj" />
+  <Project Path="RemoteAgent.Diagnostics/RemoteAgent.Diagnostics.csproj" />
+  <Project Path="RemoteAgent.Ipc/RemoteAgent.Ipc.csproj" />
+  <Project Path="RemoteAgent.Protocol/RemoteAgent.Protocol.csproj" />
+  <Project Path="RemoteAgent.Security/RemoteAgent.Security.csproj" />
+  <Project Path="RemoteAgent.Service/RemoteAgent.Service.csproj" />
+  <Project Path="RemoteAgent.Session/RemoteAgent.Session.csproj" />
+  <Project Path="RemoteAgent.Streaming/RemoteAgent.Streaming.csproj" />
+  <Project Path="RemoteAgent.Windows/RemoteAgent.Windows.csproj" />
+</Solution>

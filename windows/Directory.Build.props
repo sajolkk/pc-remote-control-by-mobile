@@ -1,0 +1,53 @@
+<Project>
+
+  <!--
+    Shared build settings for every RemoteAgent project.
+
+    Portability (§0 of the architecture doc): no machine-specific value is ever
+    compiled in, and every host publishes self-contained for x64 and ARM64 so the
+    target PC needs no .NET runtime installed.
+  -->
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+    <!-- Nullability and unawaited-task mistakes are build breaks: the network
+         parser and the command pipeline depend on both. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS8600;CS8602;CS8603;CS8618;CS8625;CS4014</WarningsAsErrors>
+
+    <Product>PC-Remote</Product>
+    <Company>PC-Remote</Company>
+    <Version>0.2.0</Version>
+    <AssemblyVersion>0.2.0.0</AssemblyVersion>
+    <FileVersion>0.2.0.0</FileVersion>
+
+    <ArtifactsPath>$(MSBuildThisFileDirectory)..\artifacts</ArtifactsPath>
+  </PropertyGroup>
+
+  <!--
+    One Windows target framework for every Windows-dependent project. Targeting a Windows SDK
+    version (rather than bare net10.0-windows) brings in the WinRT projections the platform layer
+    needs, and naming it once here stops the projects drifting onto incompatible TFMs.
+    SupportedOSPlatformVersion keeps the actual floor at Windows 10 1809, so the platform
+    analyzer flags any call that would not run there.
+  -->
+  <PropertyGroup>
+    <WindowsTargetFramework>net10.0-windows10.0.19041.0</WindowsTargetFramework>
+    <WindowsPlatformFloor>10.0.17763.0</WindowsPlatformFloor>
+  </PropertyGroup>
+
+  <!-- Central package versions so no project pins its own. -->
+  <PropertyGroup>
+    <MicrosoftExtensionsVersion>10.0.0</MicrosoftExtensionsVersion>
+    <SerilogHostingVersion>9.0.0</SerilogHostingVersion>
+    <VorticeVersion>3.8.3</VorticeVersion>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The user-session host: runs as the signed-in user, on the interactive desktop.
+
+    WinExe rather than Exe: this process must not flash a console window on the user's
+    desktop every time the service starts it. It has no main window either — the only UI it
+    ever shows is the pairing approval dialog.
+
+    UseWPF is enabled solely for that dialog. WPF is already a dependency of the management
+    UI, so it adds no new technology, and it needs no Windows App SDK deployment (§11).
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>$(WindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(WindowsPlatformFloor)</SupportedOSPlatformVersion>
+    <RootNamespace>RemoteAgent.Session</RootNamespace>
+    <AssemblyName>RemoteAgent.Session</AssemblyName>
+    <UseWPF>true</UseWPF>
+    <!--
+      WinForms is enabled solely for NotifyIcon, the tray icon. WPF has no tray support of its own,
+      and the alternative is hand-rolling Shell_NotifyIcon through P/Invoke plus a hidden message
+      window. Both frameworks ship in the same Windows Desktop runtime, so enabling it adds no new
+      dependency to deploy.
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteAgent.Core\RemoteAgent.Core.csproj" />
+    <ProjectReference Include="..\RemoteAgent.Protocol\RemoteAgent.Protocol.csproj" />
+    <ProjectReference Include="..\RemoteAgent.Windows\RemoteAgent.Windows.csproj" />
+    <ProjectReference Include="..\RemoteAgent.Ipc\RemoteAgent.Ipc.csproj" />
+    <ProjectReference Include="..\RemoteAgent.Diagnostics\RemoteAgent.Diagnostics.csproj" />
+    <ProjectReference Include="..\RemoteAgent.Streaming\RemoteAgent.Streaming.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="9.0.0" />
+    <!-- QR rendering for the pairing code. -->
+    <PackageReference Include="QRCoder" Version="1.8.0" />
+  </ItemGroup>
+
+</Project>

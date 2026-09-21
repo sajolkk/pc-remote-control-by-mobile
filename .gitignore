@@ -1,0 +1,62 @@
+## Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]64/
+artifacts/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.DotSettings.user
+
+## NuGet
+*.nupkg
+packages/
+!packages/build/
+
+## Test results
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+
+## Flutter / Dart
+mobile/remote_control_app/.dart_tool/
+mobile/remote_control_app/.flutter-plugins
+mobile/remote_control_app/.flutter-plugins-dependencies
+mobile/remote_control_app/build/
+mobile/remote_control_app/.packages
+mobile/remote_control_app/ios/Pods/
+mobile/remote_control_app/ios/.symlinks/
+mobile/remote_control_app/android/.gradle/
+mobile/remote_control_app/android/local.properties
+mobile/remote_control_app/android/key.properties
+*.g.dart
+*.freezed.dart
+
+## Secrets and machine-local state — never commit
+*.pfx
+*.p12
+*.key
+*.pem
+**/secrets/
+**/*.local.json
+local.settings.json
+
+## Runtime data (would normally live in %ProgramData%, never in the repo)
+**/runtime-data/
+*.log
+
+## Local Gradle cache, relocated off the system drive during development
+.gradle-home/
+
+## Visual Studio solution user state for the new .slnx format
+*.slnx.user

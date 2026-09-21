@@ -1,0 +1,59 @@
+name: remote_control_app
+description: Securely monitor and control your Windows PC over your local network.
+publish_to: "none"
+version: 0.2.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management. Riverpod rather than setState because a connection has real
+  # state — discovering, connecting, authenticating, ready, degraded, reconnecting —
+  # and several screens observe it at once.
+  flutter_riverpod: ^2.6.1
+
+  # Secure storage for the device's identity key and pairing records. Backed by the
+  # Android Keystore and the iOS Keychain. See DeviceIdentity for the important
+  # limitation: the key is protected at rest but is readable by this app's own
+  # process, because Dart's TLS stack needs the key material in memory.
+  flutter_secure_storage: ^9.2.2
+
+  # X.509 and EC key generation, for the client certificate this app authenticates
+  # with. Chosen over hand-rolling ASN.1: a malformed certificate would fail the TLS
+  # handshake in ways that are miserable to debug.
+  basic_utils: ^5.7.0
+  pointycastle: ^3.9.1
+
+  # SHA-256 for certificate fingerprints. Referenced directly rather than relied on
+  # transitively, so a change in basic_utils cannot quietly remove it.
+  crypto: ^3.0.6
+
+  # QR scanning for pairing.
+  mobile_scanner: ^5.2.3
+
+  # Device name and model, shown in the PC's approval dialog and Paired Devices page.
+  device_info_plus: ^10.1.2
+
+  # Network change detection, so a Wi-Fi switch triggers rediscovery rather than a
+  # silent stall.
+  connectivity_plus: ^6.0.5
+
+  # Stable ids for requests and for this device.
+  uuid: ^4.5.1
+
+  # The screen stream (§9.4). libwebrtc gives hardware H.264 decode straight into a GPU texture,
+  # plus DTLS-SRTP, jitter buffering and loss recovery, none of which is worth rebuilding.
+  flutter_webrtc: ^1.6.2
+
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

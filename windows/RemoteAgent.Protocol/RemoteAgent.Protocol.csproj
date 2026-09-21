@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The wire format, and nothing else.
+
+    This project has NO dependencies, NO I/O beyond stream framing, and NO
+    platform calls, so both hosts, the UI, the tests and the Dart code generator
+    can all treat it as the single source of truth (architecture doc §13 rule 2).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>RemoteAgent.Protocol</RootNamespace>
+    <AssemblyName>RemoteAgent.Protocol</AssemblyName>
+  </PropertyGroup>
+
+</Project>

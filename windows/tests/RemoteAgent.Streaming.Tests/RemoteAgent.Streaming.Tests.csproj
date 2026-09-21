@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests for the screen-streaming pipeline (Phase 3).
+
+    Mostly platform-neutral: conversion, compositing, the adaptive controller, ICE policy, and a
+    loopback WebRTC session between two in-process peers with a synthetic capture and encoder.
+    The Windows target is only for the hardware tests, which exercise real Desktop Duplication and
+    Media Foundation and return early on a machine that has neither (a CI runner, a VM).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>$(WindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(WindowsPlatformFloor)</SupportedOSPlatformVersion>
+    <RootNamespace>RemoteAgent.Streaming.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\RemoteAgent.Streaming\RemoteAgent.Streaming.csproj" />
+    <ProjectReference Include="..\..\RemoteAgent.Windows\RemoteAgent.Windows.csproj" />
+    <ProjectReference Include="..\..\RemoteAgent.Core\RemoteAgent.Core.csproj" />
+    <ProjectReference Include="..\..\RemoteAgent.Protocol\RemoteAgent.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

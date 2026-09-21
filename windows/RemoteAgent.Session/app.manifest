@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+
+  <assemblyIdentity version="1.0.0.0" name="RemoteAgent.Session" />
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <!--
+          asInvoker, deliberately. The session agent runs at the same integrity level as the
+          user who is signed in, and never asks for elevation (§1.1 least privilege).
+
+          The consequence is documented rather than worked around: User Interface Privilege
+          Isolation means injected input cannot reach windows belonging to elevated processes,
+          so a remotely-clicked button inside an admin Task Manager or an installer does
+          nothing (§12.1).
+
+          The sanctioned fix is uiAccess="true", which would let this process drive elevated
+          windows on the user's own desktop. It is NOT enabled here because Windows only
+          honours it for an Authenticode-signed binary installed under %ProgramFiles%, and
+          claiming it without meeting those conditions makes the process fail to start at all.
+          It becomes a one-line change once code signing exists.
+
+          Note that uiAccess would still not grant access to the secure desktop — the lock
+          screen and UAC consent prompts remain out of reach for any ordinary application,
+          which is why remote unlock is out of scope.
+        -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!--
+        Per-monitor DPI awareness v2. Essential rather than cosmetic: without it Windows
+        virtualises coordinates, and every screen capture and every injected mouse position
+        would be silently scaled on a high-DPI or mixed-DPI setup (§10).
+      -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11. Declaring support prevents compatibility shims from altering
+           behaviour of the APIs this process depends on. -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+
+</assembly>

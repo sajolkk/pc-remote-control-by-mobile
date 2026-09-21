@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The ONLY project permitted to call Win32, WinRT or COM (architecture doc §13
+    rule 1). Everything platform-specific is behind an interface from Core, so the
+    rest of the system stays testable off-Windows and the blast radius of a native
+    mistake is one project.
+
+    P/Invoke is hand-written with [LibraryImport] (source-generated marshalling)
+    rather than pulled in through a generator package: the surface is small enough
+    to read in full, and it keeps the dependency list empty.
+  -->
+
+  <PropertyGroup>
+    <!--
+      Targeting a Windows SDK version (rather than bare net10.0-windows) brings in the
+      WinRT projections this project will need for Windows.Graphics.Capture in Phase 3,
+      while SupportedOSPlatformVersion keeps the actual floor at Windows 10 1809 so the
+      analyzer flags any call that would not run there.
+    -->
+    <TargetFramework>$(WindowsTargetFramework)</TargetFramework>
+    <RootNamespace>RemoteAgent.Windows</RootNamespace>
+    <AssemblyName>RemoteAgent.Windows</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <SupportedOSPlatformVersion>$(WindowsPlatformFloor)</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteAgent.Core\RemoteAgent.Core.csproj" />
+    <ProjectReference Include="..\RemoteAgent.Protocol\RemoteAgent.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="$(MicrosoftExtensionsVersion)" />
+    <!-- DPAPI and icon extraction. Versioned independently of the Extensions bundle. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
+    <!--
+      Screen capture and H.264 encoding (Phase 3): DXGI Desktop Duplication, Direct3D 11 and Media
+      Foundation. These are COM vtable APIs rather than flat exports, so hand-written LibraryImport
+      does not scale to them the way it did for the Win32 surface above; Vortice is a thin,
+      source-generated projection with no native binaries of its own.
+    -->
+    <PackageReference Include="Vortice.Direct3D11" Version="$(VorticeVersion)" />
+    <PackageReference Include="Vortice.DXGI" Version="$(VorticeVersion)" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="$(VorticeVersion)" />
+  </ItemGroup>
+
+</Project>

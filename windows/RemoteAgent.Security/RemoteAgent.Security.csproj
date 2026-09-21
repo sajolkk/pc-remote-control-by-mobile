@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Identity, pairing, tokens and abuse limits.
+
+    Platform-neutral on purpose: secret protection and ACLs are injected through
+    interfaces from Core, so every security decision in here can be unit tested
+    without Windows, a certificate store, or a real clock.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>RemoteAgent.Security</RootNamespace>
+    <AssemblyName>RemoteAgent.Security</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteAgent.Core\RemoteAgent.Core.csproj" />
+    <ProjectReference Include="..\RemoteAgent.Protocol\RemoteAgent.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="$(MicrosoftExtensionsVersion)" />
+  </ItemGroup>
+
+</Project>

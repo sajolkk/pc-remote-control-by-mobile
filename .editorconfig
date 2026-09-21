@@ -1,0 +1,34 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,jsonc,yml,yaml,xml,csproj,props,targets,wxs}]
+indent_size = 2
+
+[*.{dart,md}]
+indent_size = 2
+
+[*.cs]
+indent_size = 4
+csharp_new_line_before_open_brace = all
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_prefer_braces = when_multiline:suggestion
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:warning
+dotnet_style_readonly_field = true:warning
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.IDE0161.severity = warning
+
+# Async methods must be awaited or explicitly discarded
+dotnet_diagnostic.CS4014.severity = error
+# Nullability violations are errors: the network parser depends on them
+dotnet_diagnostic.CS8600.severity = error
+dotnet_diagnostic.CS8602.severity = error
+dotnet_diagnostic.CS8603.severity = error
+dotnet_diagnostic.CS8625.severity = error
