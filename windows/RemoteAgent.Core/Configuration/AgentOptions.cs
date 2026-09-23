@@ -168,6 +168,13 @@ public sealed class PairingOptions
     /// <summary>Seconds the approval dialog waits before treating silence as refusal.</summary>
     [Range(10, 600)]
     public int ApprovalTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Whether a phone that found this PC on the network may ask to pair without a QR code. The
+    /// user then compares a six-digit code on both screens and approves at the PC. Independent of
+    /// <see cref="AllowPairing"/>: it needs no pairing window, only the person at the PC.
+    /// </summary>
+    public bool AllowCodePairing { get; set; } = true;
 }
 
 /// <summary>Session token lifetime and replay defences (§7.2).</summary>

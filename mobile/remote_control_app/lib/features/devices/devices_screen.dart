@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +7,7 @@ import '../../app/providers.dart';
 import '../../data/storage/paired_pc_store.dart';
 import '../../domain/connection_controller.dart';
 import '../../protocol/protocol.dart';
+import '../pairing/code_pair_screen.dart';
 import '../pairing/pair_screen.dart';
 
 /// Lists paired PCs and PCs found on the network.
@@ -32,8 +35,8 @@ class DevicesScreen extends ConsumerWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _startPairing(context, ref),
-        icon: const Icon(Icons.qr_code_scanner),
+        onPressed: () => _choosePairing(context, ref),
+        icon: const Icon(Icons.add_link),
         label: const Text('Pair a PC'),
       ),
       body: RefreshIndicator(
@@ -60,7 +63,8 @@ class DevicesScreen extends ConsumerWidget {
                       icon: Icons.link_off,
                       title: 'No paired PCs yet',
                       message:
-                          'On your PC, open PC-Remote, turn on "Allow pairing", then scan the QR code it shows.',
+                          'Tap Pair next to your PC below, then click Allow on the PC when the codes match. '
+                          'Or tap "Pair a PC" to scan the QR code PC-Remote shows.',
                     )
                   : Column(
                       children: [
@@ -102,7 +106,9 @@ class DevicesScreen extends ConsumerWidget {
                     icon: Icons.wifi_find,
                     title: 'No new PCs found',
                     message:
-                        'Make sure the PC is on the same Wi-Fi network and that PC-Remote is running on it.',
+                        'Install PC-Remote on the PC (PC-Remote-Setup.exe) and check its icon is in '
+                        'the taskbar tray. The phone and PC must be on the same Wi-Fi, and the PC\'s '
+                        'network must be set to Private. Pull down to search again.',
                   );
                 }
 
@@ -119,7 +125,7 @@ class DevicesScreen extends ConsumerWidget {
                         ),
                         trailing: beacon.isCompatible
                             ? TextButton(
-                                onPressed: () => _startPairing(context, ref),
+                                onPressed: () => _pairFound(context, ref, beacon),
                                 child: const Text('Pair'),
                               )
                             : const Icon(Icons.warning_amber_rounded),
@@ -127,6 +133,13 @@ class DevicesScreen extends ConsumerWidget {
                   ],
                 );
               },
+            ),
+
+            ListTile(
+              leading: const Icon(Icons.edit_location_alt_outlined),
+              title: const Text("Can't see your PC?"),
+              subtitle: const Text("Enter the PC's address instead"),
+              onTap: () => _enterAddress(context, ref),
             ),
           ],
         ),
@@ -142,6 +155,95 @@ class DevicesScreen extends ConsumerWidget {
     return null;
   }
 
+  /// The two ways to pair: scan the PC's QR code, which connects straight to the address in it,
+  /// or search the network and confirm a code on both screens.
+  Future<void> _choosePairing(BuildContext context, WidgetRef ref) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.qr_code_scanner),
+              title: const Text('Scan QR code'),
+              subtitle: const Text(
+                'Connects directly, no search needed. On the PC, open PC-Remote from the Start menu.',
+              ),
+              onTap: () => Navigator.of(sheetContext).pop('scan'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.wifi_find),
+              title: const Text('Search this network'),
+              subtitle: const Text('Find the PC, then confirm the same code on both screens.'),
+              onTap: () => Navigator.of(sheetContext).pop('search'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_location_alt_outlined),
+              title: const Text("Enter the PC's address"),
+              subtitle: const Text('When the search cannot see the PC.'),
+              onTap: () => Navigator.of(sheetContext).pop('address'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (!context.mounted) return;
+
+    switch (choice) {
+      case 'scan':
+        await _startPairing(context, ref);
+      case 'search':
+        await _searchAndPair(context, ref);
+      case 'address':
+        await _enterAddress(context, ref);
+    }
+  }
+
+  /// Searches, then pairs straight away when exactly one new PC answers. With several, the list
+  /// on the Devices screen is the place to choose.
+  Future<void> _searchAndPair(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('Searching for PCs…')));
+
+    final pairedIds = (ref.read(pairedPcsProvider).valueOrNull ?? const <PairedPc>[])
+        .map((pc) => pc.deviceId)
+        .toSet();
+
+    final found = <String, DiscoveryBeacon>{};
+    try {
+      await for (final beacon in ref.read(discoveryProvider).scan(duration: const Duration(seconds: 4))) {
+        if (beacon.isCompatible && !pairedIds.contains(beacon.deviceId)) {
+          found[beacon.deviceId] = beacon;
+        }
+      }
+    } on Object {
+      // Reported below as nothing found.
+    }
+
+    messenger.hideCurrentSnackBar();
+    ref.invalidate(discoveredPcsProvider);
+    if (!context.mounted) return;
+
+    if (found.length == 1) {
+      await _pairFound(context, ref, found.values.single);
+      return;
+    }
+
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          found.isEmpty
+              ? 'No new PC found. Check PC-Remote is installed on the PC, or scan its QR code instead.'
+              : 'Found ${found.length} PCs. Tap Pair next to the one you want.',
+        ),
+      ),
+    );
+  }
+
   Future<void> _startPairing(BuildContext context, WidgetRef ref) async {
     final paired = await Navigator.of(context).push<bool>(
       MaterialPageRoute(builder: (_) => const PairScreen()),
@@ -151,6 +253,82 @@ class DevicesScreen extends ConsumerWidget {
       ref.invalidate(pairedPcsProvider);
       ref.invalidate(discoveredPcsProvider);
     }
+  }
+
+  Future<void> _pairFound(BuildContext context, WidgetRef ref, DiscoveryBeacon beacon) async {
+    final paired = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => CodePairScreen(beacon: beacon)),
+    );
+
+    if (paired == true) {
+      ref.invalidate(pairedPcsProvider);
+      ref.invalidate(discoveredPcsProvider);
+    }
+  }
+
+  /// For networks where the search cannot see the PC but can still reach it, e.g. when the
+  /// phone's Wi-Fi and the PC's cable are on different segments of the same router.
+  Future<void> _enterAddress(BuildContext context, WidgetRef ref) async {
+    final controller = TextEditingController();
+
+    final host = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text("PC's address"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'On the PC, open PC-Remote from the Start menu: the pairing window lists its '
+              'address, for example 192.168.1.20.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(hintText: '192.168.1.20'),
+              onSubmitted: (value) => Navigator.of(dialogContext).pop(value.trim()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('Find'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+    if (host == null || host.isEmpty || !context.mounted) return;
+
+    if (InternetAddress.tryParse(host) == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"$host" is not an address like 192.168.1.20.')),
+      );
+      return;
+    }
+
+    final beacon = await ref.read(discoveryProvider).probe(host, timeout: const Duration(seconds: 3));
+    if (!context.mounted) return;
+
+    if (beacon == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'PC-Remote did not answer at $host. Check the address, that PC-Remote is installed, '
+            'and that the phone is on the same network as the PC.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    await _pairFound(context, ref, beacon);
   }
 
   Future<void> _forget(BuildContext context, WidgetRef ref, PairedPc pc) async {

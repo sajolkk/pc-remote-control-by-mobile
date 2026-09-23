@@ -33,6 +33,9 @@ namespace RemoteAgent.Session.Ui;
 /// 192.168.1.44 is an observation.</item>
 /// <item><b>The fingerprint is shown</b> so a cautious user can compare it with what their phone
 /// displays, which detects a relayed or substituted request.</item>
+/// <item><b>For code pairing the code is the largest thing on screen</b>, because there is no QR
+/// token behind that request: comparing the code with the phone is what proves nothing on the
+/// network is in between, so it must be impossible to miss.</item>
 /// <item><b>Topmost, but not activated-by-stealing-focus.</b> The dialog must be seen, but a
 /// window appearing under the user's cursor mid-click is how accidental approvals happen.</item>
 /// </list>
@@ -51,7 +54,8 @@ internal sealed class PairingApprovalDialog : Window
         string platform,
         string model,
         string remoteAddress,
-        string fingerprint)
+        string fingerprint,
+        string code)
     {
         Title = "PC-Remote: pair a new device?";
         SizeToContent = SizeToContent.Height;
@@ -84,12 +88,41 @@ internal sealed class PairingApprovalDialog : Window
 
         root.Children.Add(details);
 
+        if (code.Length > 0)
+        {
+            root.Children.Add(new TextBlock
+            {
+                Text = "Your phone should show this code:",
+                Margin = new Thickness(0, 0, 0, 4),
+            });
+
+            root.Children.Add(new Border
+            {
+                Background = Brushes.White,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 8, 12, 8),
+                Margin = new Thickness(0, 0, 0, 14),
+                Child = new TextBlock
+                {
+                    Text = code,
+                    FontSize = 34,
+                    FontWeight = FontWeights.Bold,
+                    FontFamily = new FontFamily("Consolas"),
+                    HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                },
+            });
+        }
+
         root.Children.Add(new TextBlock
         {
-            Text =
-                "Only allow this if you recognise the device and started the pairing yourself. " +
-                "The device name is chosen by the device; the address is not. If the fingerprint " +
-                "does not match the one shown on your phone, decline.",
+            Text = code.Length > 0
+                ? "Only allow this if you recognise the device, you started the pairing yourself, " +
+                  "and the code above is exactly the code on your phone. If the codes differ, decline."
+                : "Only allow this if you recognise the device and started the pairing yourself. " +
+                  "The device name is chosen by the device; the address is not. If the fingerprint " +
+                  "does not match the one shown on your phone, decline.",
             TextWrapping = TextWrapping.Wrap,
             Foreground = new SolidColorBrush(Color.FromRgb(0x50, 0x50, 0x50)),
             Margin = new Thickness(0, 0, 0, 8),
@@ -202,9 +235,10 @@ internal sealed class PairingApprovalDialog : Window
         string platform,
         string model,
         string remoteAddress,
-        string fingerprint)
+        string fingerprint,
+        string code = "")
     {
-        var dialog = new PairingApprovalDialog(deviceName, platform, model, remoteAddress, fingerprint);
+        var dialog = new PairingApprovalDialog(deviceName, platform, model, remoteAddress, fingerprint, code);
         dialog.ShowDialog();
         return dialog._approved;
     }

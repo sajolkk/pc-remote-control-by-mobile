@@ -27,12 +27,12 @@ namespace RemoteAgent.Session;
 /// Entry point for the user-session agent.
 /// </summary>
 /// <remarks>
-/// <para>This process is started by the service, never by the user, and it refuses to run without
+/// <para>The agent is started by the service, never by the user, and it refuses to run without
 /// the one-time spawn token the service places in its environment. That refusal is the point: the
 /// IPC pipe has to be openable by interactive users (the agent is one), so the token is what
 /// distinguishes the real agent from any other process the user could run. A copy launched by
-/// hand has no token, cannot complete the IPC handshake, and exits immediately rather than
-/// lingering as a half-working impostor.</para>
+/// hand, such as from the Start-menu shortcut, has no token and never becomes an agent: it only
+/// asks the running agent to show its pairing window, then exits (<see cref="LauncherMode"/>).</para>
 ///
 /// <para>It runs at the user's own integrity level and never asks for elevation. The visible
 /// consequence — that injected input cannot reach elevated windows — is documented in the
@@ -66,11 +66,9 @@ public static class Program
 
             if (spawn is null)
             {
-                Log.Warning(
-                    "This process was not started by the PC-Remote service: no spawn token was provided. " +
-                    "The session agent is started automatically and should not be launched by hand. Exiting.");
-
-                return 2;
+                // Launched by hand, normally from the Start-menu shortcut. Never becomes an agent:
+                // it asks the real one to show itself and exits.
+                return LauncherMode.Run(args);
             }
 
             string userName = ResolveUserName();

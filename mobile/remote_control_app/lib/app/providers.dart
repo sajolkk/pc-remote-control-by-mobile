@@ -29,14 +29,19 @@ final discoveryProvider = Provider<DiscoveryService>((ref) => DiscoveryService()
 ///
 /// Autodisposed so leaving the screen stops the scan rather than leaving a socket and a
 /// repeating timer alive in the background.
-final discoveredPcsProvider = StreamProvider.autoDispose<List<DiscoveryBeacon>>((ref) {
+///
+/// Emits an empty list when the scan ends with no answers. Without it the provider would never
+/// leave its loading state and the screen would say "Scanning…" forever.
+final discoveredPcsProvider = StreamProvider.autoDispose<List<DiscoveryBeacon>>((ref) async* {
   final discovery = ref.watch(discoveryProvider);
   final found = <String, DiscoveryBeacon>{};
 
-  return discovery.scan(duration: const Duration(seconds: 6)).map((beacon) {
+  await for (final beacon in discovery.scan(duration: const Duration(seconds: 6))) {
     found[beacon.deviceId] = beacon;
-    return found.values.toList(growable: false);
-  });
+    yield found.values.toList(growable: false);
+  }
+
+  if (found.isEmpty) yield const <DiscoveryBeacon>[];
 });
 
 /// The connection controller, shared across every screen.

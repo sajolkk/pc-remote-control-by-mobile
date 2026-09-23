@@ -50,6 +50,29 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   int _index = 0;
 
   @override
+  void initState() {
+    super.initState();
+    _autoConnect();
+  }
+
+  /// Reconnects to the PC used most recently, so opening the app is enough to be connected.
+  Future<void> _autoConnect() async {
+    final pcs = await ref.read(pairedStoreProvider).getAll();
+    if (!mounted || pcs.isEmpty) return;
+
+    final connection = ref.read(connectionProvider);
+    if (connection.status.phase != ConnectionPhase.idle) return;
+
+    final latest = pcs.reduce((a, b) {
+      final aSeen = a.lastSeenAt ?? a.pairedAt;
+      final bSeen = b.lastSeenAt ?? b.pairedAt;
+      return bSeen.isAfter(aSeen) ? b : a;
+    });
+
+    await connection.connect(latest);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final status = ref.watch(connectionProvider).status;
 

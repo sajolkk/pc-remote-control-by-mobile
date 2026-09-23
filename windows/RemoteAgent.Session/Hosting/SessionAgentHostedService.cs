@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -104,6 +105,7 @@ public sealed class SessionAgentHostedService : BackgroundService
 
             HookSessionSwitch();
             await CreateTrayAsync(stoppingToken).ConfigureAwait(false);
+            _ = ListenForShowRequestsAsync(stoppingToken);
 
             _logger.LogInformation(
                 "Session agent starting. Commands={CommandCount} Capabilities={Capabilities}",
@@ -166,6 +168,56 @@ public sealed class SessionAgentHostedService : BackgroundService
         _tray = tray;
         await UpdateTrayAsync(pairingOpen: false).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Answers the Start-menu shortcut: opens pairing, or brings its window forward if already open.
+    /// </summary>
+    /// <remarks>
+    /// Waits on its own thread-pool thread, because the wait blocks. It ends with the agent.
+    /// </remarks>
+    private Task ListenForShowRequestsAsync(CancellationToken stoppingToken) => Task.Run(
+        async () =>
+        {
+            EventWaitHandle signal;
+
+            try
+            {
+                signal = ShowRequestSignal.CreateListener();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+            {
+                _logger.LogWarning(ex, "The Start-menu shortcut will not be able to reach this agent.");
+                return;
+            }
+
+            using EventWaitHandle owned = signal;
+            WaitHandle[] handles = [signal, stoppingToken.WaitHandle];
+
+            while (WaitHandle.WaitAny(handles) == 0)
+            {
+                _logger.LogInformation("PC-Remote was opened from the Start menu.");
+
+                bool alreadyOpen = await _ui.InvokeAsync(
+                    () =>
+                    {
+                        if (_qrWindow is null)
+                        {
+                            return false;
+                        }
+
+                        _qrWindow.Activate();
+                        return true;
+                    },
+                    fallback: false,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                if (!alreadyOpen)
+                {
+                    await OpenPairingAsync().ConfigureAwait(false);
+                }
+            }
+        },
+        CancellationToken.None);
 
     private async Task UpdateTrayAsync(bool pairingOpen)
     {
@@ -428,6 +480,7 @@ public sealed class SessionAgentHostedService : BackgroundService
         string model = ReadString(args, "model");
         string address = ReadString(args, "remoteAddress");
         string fingerprint = ReadString(args, "fingerprint");
+        string code = ReadString(args, "code");
 
         _logger.LogInformation(
             "Showing a pairing approval prompt for a device at {Address}.",
@@ -435,7 +488,7 @@ public sealed class SessionAgentHostedService : BackgroundService
 
         // The fallback is false: if the dialog cannot be shown for any reason, the answer is no.
         bool approved = await _ui.InvokeAsync(
-            () => PairingApprovalDialog.Show(deviceName, platform, model, address, fingerprint),
+            () => PairingApprovalDialog.Show(deviceName, platform, model, address, fingerprint, code),
             fallback: false,
             cancellationToken).ConfigureAwait(false);
 

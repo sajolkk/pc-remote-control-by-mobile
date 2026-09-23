@@ -192,31 +192,42 @@ class ConnectionController extends ChangeNotifier {
     await _teardown();
 
     try {
-      _set(_status.copyWith(phase: ConnectionPhase.locating, message: 'Looking for ${pc.deviceName}…'));
+      final identity = await _identityStore.getOrCreate();
 
-      final endpoint = await _locate(pc);
-      if (endpoint == null) {
-        _scheduleRetry(pc, '${pc.deviceName} is not answering on this network.');
-        return;
+      // Direct connect first: the remembered address usually still works, and connecting to it
+      // needs no network search at all, so it also works where discovery is blocked.
+      var connected = await _connectDirect(pc, identity);
+
+      if (connected == null) {
+        _set(_status.copyWith(phase: ConnectionPhase.locating, message: 'Looking for ${pc.deviceName}…'));
+
+        final endpoint = await _locate(pc);
+        if (endpoint == null) {
+          _scheduleRetry(pc, '${pc.deviceName} is not answering on this network.');
+          return;
+        }
+
+        final client = ControlClient(identity: identity);
+
+        _set(_status.copyWith(
+          phase: ConnectionPhase.connecting,
+          message: 'Connecting to ${endpoint.host}…',
+        ));
+
+        await client.connect(
+          host: endpoint.host,
+          port: endpoint.port,
+
+          // The pinned fingerprint. A PC presenting anything else is refused outright rather
+          // than trusted on first use.
+          expectedFingerprint: pc.fingerprint,
+        );
+
+        connected = (client: client, host: endpoint.host, port: endpoint.port);
       }
 
-      final identity = await _identityStore.getOrCreate();
-      final client = ControlClient(identity: identity);
-
-      _set(_status.copyWith(
-        phase: ConnectionPhase.connecting,
-        message: 'Connecting to ${endpoint.host}…',
-      ));
-
-      await client.connect(
-        host: endpoint.host,
-        port: endpoint.port,
-
-        // The pinned fingerprint. A PC presenting anything else is refused outright rather
-        // than trusted on first use.
-        expectedFingerprint: pc.fingerprint,
-      );
-
+      final client = connected.client;
+      final endpoint = (host: connected.host, port: connected.port);
       _client = client;
 
       _set(_status.copyWith(
@@ -225,7 +236,7 @@ class ConnectionController extends ChangeNotifier {
         tlsDescription: client.tlsDescription,
       ));
 
-      final device = await _describeThisDevice();
+      final device = await describeThisDevice();
 
       final hello = await client.hello(
         deviceName: device.name,
@@ -278,18 +289,40 @@ class ConnectionController extends ChangeNotifier {
     }
   }
 
+  /// Connects straight to the remembered address, without searching. Null when that fails.
+  ///
+  /// A certificate mismatch here is not treated as an attack: after a router restart another
+  /// device may simply have been given the PC's old address. The search that follows finds the
+  /// PC wherever it is now, and a mismatch there is final.
+  Future<({ControlClient client, String host, int port})?> _connectDirect(
+    PairedPc pc,
+    DeviceIdentity identity,
+  ) async {
+    final host = pc.lastAddress;
+    if (host == null) return null;
+
+    _set(_status.copyWith(phase: ConnectionPhase.connecting, message: 'Connecting to $host…'));
+
+    final client = ControlClient(identity: identity);
+    try {
+      await client.connect(
+        host: host,
+        port: pc.lastPort,
+        expectedFingerprint: pc.fingerprint,
+        timeout: const Duration(seconds: 3),
+      );
+      return (client: client, host: host, port: pc.lastPort);
+    } on Object {
+      await client.dispose();
+      return null;
+    }
+  }
+
   /// Finds where the PC is right now.
   Future<({String host, int port})?> _locate(PairedPc pc) async {
-    // The remembered address first: instant when it still works, which it usually does.
     final remembered = pc.lastAddress;
-    if (remembered != null) {
-      final beacon = await _discovery.probe(remembered);
-      if (beacon != null && beacon.deviceId == pc.deviceId) {
-        return (host: remembered, port: beacon.port);
-      }
-    }
 
-    // Otherwise scan. Matching on device id rather than address is what makes a changed IP
+    // Scan. Matching on device id rather than address is what makes a changed IP
     // a non-event.
     try {
       await for (final beacon in _discovery.scan(duration: const Duration(seconds: 4))) {
@@ -301,8 +334,8 @@ class ConnectionController extends ChangeNotifier {
       // Fall through: a failed scan is not fatal if we have a remembered address to try.
     }
 
-    // Last resort: try the remembered address blind. Discovery may be disabled on the PC or
-    // broadcast filtered on this network, and the control port may still be reachable.
+    // Last resort: the remembered address again, in case it was only slow to answer the direct
+    // attempt.
     if (remembered != null) {
       return (host: remembered, port: pc.lastPort);
     }
@@ -441,31 +474,6 @@ class ConnectionController extends ChangeNotifier {
     });
   }
 
-  Future<({String name, String platform, String model})> _describeThisDevice() async {
-    final info = DeviceInfoPlugin();
-
-    try {
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        final android = await info.androidInfo;
-        return (
-          name: android.model,
-          platform: 'android',
-          model: '${android.manufacturer} ${android.model}',
-        );
-      }
-
-      if (defaultTargetPlatform == TargetPlatform.iOS) {
-        final ios = await info.iosInfo;
-        return (name: ios.name, platform: 'ios', model: ios.utsname.machine);
-      }
-    } on Object {
-      // Device info is cosmetic: it decides what the PC's approval dialog displays, so a
-      // failure degrades to a generic name rather than blocking the connection.
-    }
-
-    return (name: 'Mobile device', platform: defaultTargetPlatform.name, model: 'unknown');
-  }
-
   Future<void> _teardown() async {
     await _eventSubscription?.cancel();
     _eventSubscription = null;
@@ -497,4 +505,30 @@ class ConnectionController extends ChangeNotifier {
     _eventsOut.close().ignore();
     super.dispose();
   }
+}
+
+/// What this phone calls itself in the PC's approval dialog and paired-devices list.
+Future<({String name, String platform, String model})> describeThisDevice() async {
+  final info = DeviceInfoPlugin();
+
+  try {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final android = await info.androidInfo;
+      return (
+        name: android.model,
+        platform: 'android',
+        model: '${android.manufacturer} ${android.model}',
+      );
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final ios = await info.iosInfo;
+      return (name: ios.name, platform: 'ios', model: ios.utsname.machine);
+    }
+  } on Object {
+    // Device info is cosmetic: it decides what the PC's approval dialog displays, so a
+    // failure degrades to a generic name rather than blocking the connection.
+  }
+
+  return (name: 'Mobile device', platform: defaultTargetPlatform.name, model: 'unknown');
 }

@@ -515,4 +515,78 @@ public sealed class PairingAndAuthTests(ITestOutputHelper output)
         // Forward secrecy and AEAD, whichever version was agreed.
         Assert.Contains("GCM", client.NegotiatedCipher, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task CodePairingNeedsNoPairingWindowAndShowsTheCodeBothSidesCompute()
+    {
+        await using TestHarness harness = await TestHarness.StartAsync();
+
+        // No expected fingerprint: a phone that found the PC on the network has no QR code to
+        // learn it from, and trusts what answered until the user compares codes.
+        await using TestClient client = TestClient.Create(expectedServerFingerprint: string.Empty);
+        await client.ConnectAsync(harness.Port);
+
+        ResponseEnvelope pairing = await client.PairAsync(pairingToken: string.Empty);
+
+        Assert.True(pairing.Ok, pairing.Error?.Message);
+        Assert.Equal(1, harness.Approval.PromptCount);
+
+        // The phone derives its code from the fingerprint it saw during the handshake and its own;
+        // the PC's dialog must show exactly that.
+        string phoneSideCode = PairingCode.Compute(
+            TestClient.Payload<PairResult>(pairing).CertificateFingerprint,
+            client.Fingerprint);
+
+        Assert.Equal(PairingCode.ToDisplayForm(phoneSideCode), harness.Approval.LastRequest!.ComparisonCode);
+
+        await client.DisconnectAsync();
+        await client.ConnectAsync(harness.Port);
+        Assert.True((await client.HelloAsync()).Ok);
+    }
+
+    [Fact]
+    public async Task CodePairingIsRefusedWithoutPromptingWhenSwitchedOff()
+    {
+        await using TestHarness harness = await TestHarness.StartAsync(
+            options => options.Pairing.AllowCodePairing = false);
+        await using TestClient client = TestClient.Create(harness.Identity.Fingerprint);
+        await client.ConnectAsync(harness.Port);
+
+        ResponseEnvelope response = await client.PairAsync(pairingToken: string.Empty);
+
+        Assert.False(response.Ok);
+        Assert.Equal(ErrorCodes.PairingDisabled, response.Error!.Code);
+        Assert.Equal(0, harness.Approval.PromptCount);
+    }
+
+    [Fact]
+    public async Task DeclinedCodePairingCannotImmediatelyAskAgain()
+    {
+        await using TestHarness harness = await TestHarness.StartAsync();
+        harness.Approval.ApproveNext = false;
+
+        await using TestClient first = TestClient.Create(harness.Identity.Fingerprint);
+        await first.ConnectAsync(harness.Port);
+        ResponseEnvelope declined = await first.PairAsync(pairingToken: string.Empty);
+
+        Assert.Equal(ErrorCodes.PairingRejected, declined.Error!.Code);
+
+        // Without a token nothing filters requests before a person sees them, so a refused
+        // address must not be able to put the dialog straight back on screen.
+        await using TestClient second = TestClient.Create(harness.Identity.Fingerprint, "test-phone-2");
+        await second.ConnectAsync(harness.Port);
+        ResponseEnvelope retry = await second.PairAsync(pairingToken: string.Empty, deviceId: "test-phone-2");
+
+        Assert.False(retry.Ok);
+        Assert.Equal(ErrorCodes.RateLimited, retry.Error!.Code);
+        Assert.Equal(1, harness.Approval.PromptCount);
+    }
+
+    [Fact]
+    public void PairingCodeMatchesTheMobileAppDerivation()
+    {
+        // The same vector is asserted in the mobile app's tests; a change on either side breaks both.
+        Assert.Equal("792692", PairingCode.Compute("pc-fingerprint", "phone-fingerprint"));
+        Assert.Equal("792 692", PairingCode.ToDisplayForm("792692"));
+    }
 }

@@ -58,6 +58,7 @@ public sealed class SessionAgentApprovalService : IPairingApprovalService
             model = request.Model,
             remoteAddress = request.RemoteAddress,
             fingerprint = request.FingerprintShort,
+            code = request.ComparisonCode,
         };
 
         // The IPC timeout is generous: the whole point is to wait for a human. The overall

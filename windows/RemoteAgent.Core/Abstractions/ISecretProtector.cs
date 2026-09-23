@@ -57,9 +57,14 @@ public interface IPairingApprovalService
 /// Colon-hex prefix of the device's certificate fingerprint, so a cautious user can
 /// compare it against what their phone displays.
 /// </param>
+/// <param name="ComparisonCode">
+/// For code pairing, the six-digit code the phone also shows; the user must check they match.
+/// Null for QR pairing.
+/// </param>
 public sealed record PairingApprovalRequest(
     string DeviceName,
     string Platform,
     string Model,
     string RemoteAddress,
-    string FingerprintShort);
+    string FingerprintShort,
+    string? ComparisonCode = null);

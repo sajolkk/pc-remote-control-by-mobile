@@ -78,7 +78,12 @@ unlocking needs you at the keyboard. The reasoning is in
 
 ## Getting started
 
-Requires the .NET 10 SDK, and Flutter for the mobile app.
+**Just want to use it?** Run [`artifacts/release/PC-Remote-Setup.exe`](artifacts/release/PC-Remote-Setup.exe)
+on the PC and install [`artifacts/release/Android/PC-Remote.apk`](artifacts/release/Android/PC-Remote.apk)
+on the phone. In the app, tap **Pair** next to your PC and click **Allow** on the PC when both
+screens show the same code. [Step by step](shared/docs/04-setup-and-connect.md).
+
+To build from source you need the .NET 10 SDK, and Flutter for the mobile app.
 
 ```powershell
 # PC side
@@ -99,8 +104,9 @@ flutter test
 flutter run
 ```
 
-Then right-click the PC-Remote tray icon, choose **Allow pairing and show QR code**, and scan it from
-the app's Devices tab.
+Then tap **Pair** next to the PC in the app's Devices tab and allow it on the PC, or open PC-Remote
+from the Start menu (or the tray icon) and scan its QR code. `windows/installer/build-installer.ps1`
+builds `PC-Remote-Setup.exe`.
 
 [Full instructions, including portable mode](shared/docs/02-implementation-notes.md#4-running-it).
 

@@ -65,3 +65,6 @@ local.settings.json
 ## through Git LFS (.gitattributes) because the executables exceed GitHub's 100 MB file limit.
 !artifacts/release/
 !artifacts/release/**
+
+## Staging for the installer (windows/installer/build-installer.ps1); only Setup.exe ships
+artifacts/publish/

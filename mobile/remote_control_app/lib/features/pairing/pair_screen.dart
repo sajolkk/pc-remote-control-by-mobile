@@ -6,6 +6,7 @@ import '../../app/providers.dart';
 import '../../data/control/control_client.dart';
 import '../../data/identity/device_identity.dart';
 import '../../data/storage/paired_pc_store.dart';
+import '../../domain/connection_controller.dart';
 import '../../protocol/protocol.dart';
 
 /// Pairs this device with a PC by scanning its QR code.
@@ -101,7 +102,7 @@ class _PairScreenState extends ConsumerState<PairScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'On the PC: open PC-Remote, turn on "Allow pairing", then Generate QR code.',
+                      'On the PC: open PC-Remote from the Start menu to show the QR code.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 13),
                     ),
@@ -221,7 +222,7 @@ class _PairScreenState extends ConsumerState<PairScreen> {
     final client = ControlClient(identity: identity);
 
     try {
-      final endpoint = await _resolveEndpoint(payload);
+      final endpoint = await _connectDirect(client, payload);
       if (endpoint == null) {
         _fail(
           'Could not reach ${payload.deviceName}. Check that the phone and the PC are on the '
@@ -230,19 +231,10 @@ class _PairScreenState extends ConsumerState<PairScreen> {
         return;
       }
 
-      await client.connect(
-        host: endpoint,
-        port: payload.port,
-
-        // Pinned from the QR code on the very first connection, so there is no
-        // trust-on-first-use window for an attacker to exploit.
-        expectedFingerprint: payload.fingerprint,
-      );
-
       if (!mounted) return;
       setState(() => _stage = _Stage.waitingForApproval);
 
-      final device = await _describeDevice();
+      final device = await describeThisDevice();
 
       final response = await client.pair(
         pairingToken: payload.token,
@@ -289,10 +281,14 @@ class _PairScreenState extends ConsumerState<PairScreen> {
       setState(() {
         _stage = _Stage.success;
         _pcName = pc.deviceName;
-        _message = pc.permissions.isEmpty
-            ? null
-            : 'Granted: ${pc.permissions.map(Permissions.label).join(', ')}.';
+        _message = 'Connecting…';
       });
+
+      // Straight on to a live connection: no second tap, and no search, because the address
+      // that just worked is remembered.
+      ref.read(connectionProvider).connect(pc).ignore();
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      if (mounted) Navigator.of(context).pop(true);
     } on CertificatePinMismatch catch (error) {
       _fail(error.toString());
     } on ControlChannelException catch (error) {
@@ -304,36 +300,43 @@ class _PairScreenState extends ConsumerState<PairScreen> {
     }
   }
 
-  /// Finds an address that answers, trying the QR code's hints then discovery.
-  Future<String?> _resolveEndpoint(PairingQrPayload payload) async {
-    final discovery = ref.read(discoveryProvider);
-
+  /// Connects straight to the addresses in the QR code, with no network search.
+  ///
+  /// Returns the address that worked. Only when none of them answers does it fall back to
+  /// searching for the PC by its id: the QR code may be from before the PC changed networks.
+  /// Every attempt is pinned to the QR code's fingerprint, so trying several addresses can
+  /// never connect to the wrong machine.
+  Future<String?> _connectDirect(ControlClient client, PairingQrPayload payload) async {
     for (final host in payload.hosts) {
-      final beacon = await discovery.probe(host, timeout: const Duration(milliseconds: 1200));
-      if (beacon != null && beacon.deviceId == payload.deviceId) {
+      try {
+        await client.connect(
+          host: host,
+          port: payload.port,
+          expectedFingerprint: payload.fingerprint,
+          timeout: const Duration(seconds: 3),
+        );
         return host;
+      } on CertificatePinMismatch {
+        // Another device answers at this address. Try the next one.
+      } on Object {
+        // Not reachable from here, e.g. an address on the PC's other network adapter.
       }
     }
 
-    // The QR code's addresses can be stale — it may have been generated before the PC moved
-    // networks — so fall back to finding it by device id.
     try {
-      await for (final beacon in discovery.scan(duration: const Duration(seconds: 4))) {
-        if (beacon.deviceId == payload.deviceId) return beacon.address;
+      await for (final beacon in ref.read(discoveryProvider).scan(duration: const Duration(seconds: 4))) {
+        if (beacon.deviceId != payload.deviceId) continue;
+
+        await client.connect(host: beacon.address, port: beacon.port, expectedFingerprint: payload.fingerprint);
+        return beacon.address;
       }
+    } on CertificatePinMismatch {
+      rethrow;
     } on Object {
-      // Ignored: the blind attempt below may still succeed.
+      // Nothing else to try.
     }
 
-    // Last resort: try the first hint even though it did not answer discovery. Discovery may
-    // be disabled on the PC while the control port is perfectly reachable.
-    return payload.hosts.isEmpty ? null : payload.hosts.first;
-  }
-
-  Future<({String name, String platform, String model})> _describeDevice() async {
-    // Kept deliberately simple here; the connection controller does the fuller version. What
-    // matters for pairing is that the name shown in the PC's approval dialog is recognisable.
-    return (name: 'Mobile device', platform: 'mobile', model: 'phone');
+    return null;
   }
 
   String _explain(ProtocolError? error) => switch (error?.code) {

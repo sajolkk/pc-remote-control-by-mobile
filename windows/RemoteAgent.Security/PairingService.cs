@@ -33,6 +33,9 @@ public enum PairingOutcome
 
     /// <summary>The request was malformed.</summary>
     InvalidRequest,
+
+    /// <summary>Another code pairing is already waiting for the user at the PC.</summary>
+    Busy,
 }
 
 /// <summary>The result of a pairing attempt, with the record when it succeeded.</summary>
@@ -75,11 +78,20 @@ public interface IPairingService
     event EventHandler<PairingWindow?>? WindowChanged;
 
     /// <summary>Attempts to pair a device.</summary>
+    /// <param name="request">The pairing request. An empty token selects code pairing.</param>
+    /// <param name="peerCertificateFingerprint">The certificate the peer presented on this connection.</param>
+    /// <param name="remoteAddress">The peer's address, for display and rate limiting.</param>
+    /// <param name="cancellationToken">Cancels the attempt.</param>
+    /// <param name="localCertificateFingerprint">
+    /// This PC's own certificate fingerprint. Needed only for code pairing, whose code is derived
+    /// from both fingerprints.
+    /// </param>
     Task<PairingAttemptResult> TryPairAsync(
         PairRequestArgs request,
         string peerCertificateFingerprint,
         string remoteAddress,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string localCertificateFingerprint = "");
 }
 
 /// <summary>
@@ -108,6 +120,16 @@ public interface IPairingService
 /// request: the attacker would have to possess the private key matching the
 /// fingerprint it claims.
 /// </para>
+/// <para>
+/// <b>Code pairing</b> is the second way in, for a phone that found the PC on the network
+/// and has no QR code: the request carries no token. There is no secret to check, so the
+/// human does all the work, and the dialog shows a six-digit <see cref="PairingCode"/> the
+/// phone shows too. Matching codes prove both ends hold the keys this TLS connection was made
+/// with, which is what the QR code's fingerprint otherwise proves. Because no token filters
+/// requests before a person sees them, only one code prompt is shown at a time and an address
+/// that was refused waits a minute before it can ask again. The owner can switch the path off
+/// with <see cref="PairingOptions.AllowCodePairing"/>.
+/// </para>
 /// </remarks>
 public sealed class PairingService : IPairingService
 {
@@ -121,8 +143,13 @@ public sealed class PairingService : IPairingService
     private readonly PairingOptions _options;
     private readonly object _sync = new();
 
+    private static readonly TimeSpan CodePairingCooldown = TimeSpan.FromMinutes(1);
+
+    private readonly Dictionary<string, DateTimeOffset> _codeCooldownUntil = new(StringComparer.Ordinal);
+
     private PairingWindow? _window;
     private int _failedAttempts;
+    private bool _codePromptActive;
 
     /// <summary>Creates the service.</summary>
     public PairingService(
@@ -219,7 +246,8 @@ public sealed class PairingService : IPairingService
         PairRequestArgs request,
         string peerCertificateFingerprint,
         string remoteAddress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string localCertificateFingerprint = "")
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -231,9 +259,19 @@ public sealed class PairingService : IPairingService
             return new PairingAttemptResult(PairingOutcome.FingerprintMismatch, null);
         }
 
-        if (string.IsNullOrWhiteSpace(request.DeviceId) || string.IsNullOrWhiteSpace(request.Token))
+        if (string.IsNullOrWhiteSpace(request.DeviceId))
         {
-            return Fail(PairingOutcome.InvalidRequest, remoteAddress, "missing device id or token");
+            return Fail(PairingOutcome.InvalidRequest, remoteAddress, "missing device id");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Token))
+        {
+            return await TryPairWithCodeAsync(
+                request,
+                peerCertificateFingerprint,
+                localCertificateFingerprint,
+                remoteAddress,
+                cancellationToken).ConfigureAwait(false);
         }
 
         // --- Gate 1: is pairing open at all? ---
@@ -288,64 +326,211 @@ public sealed class PairingService : IPairingService
         }
 
         // --- Gate 3: does the claimed identity match the TLS peer? ---
-        if (!string.IsNullOrEmpty(request.ClientFingerprint) &&
-            !CertificateFingerprint.Equal(request.ClientFingerprint, peerCertificateFingerprint))
+        if (!ClaimMatchesPeer(request, peerCertificateFingerprint, remoteAddress))
         {
-            _logger.LogWarning(
-                "Pairing request from {Address} claimed fingerprint {Claimed} but presented {Actual}. " +
-                "Refusing: the request may have been relayed.",
-                remoteAddress,
-                CertificateFingerprint.ToShortForm(request.ClientFingerprint),
-                CertificateFingerprint.ToShortForm(peerCertificateFingerprint));
-
             return new PairingAttemptResult(PairingOutcome.FingerprintMismatch, null);
         }
 
         // --- Gate 4: does a human at the PC approve? ---
         if (_options.RequireLocalApproval)
         {
-            if (!_approval.CanPrompt)
-            {
-                // No UI to ask. Refusing is the only safe answer: treating "nobody
-                // available to consent" as consent would make a leaked QR code
-                // sufficient for access.
-                _logger.LogWarning(
-                    "Pairing request from {Address} refused: no interactive UI is available to approve it.",
-                    remoteAddress);
-                return new PairingAttemptResult(PairingOutcome.ApprovalTimeout, null);
-            }
-
-            var approvalRequest = new PairingApprovalRequest(
-                SanitizeDisplayName(request.DeviceName),
-                SanitizeDisplayName(request.Platform),
-                SanitizeDisplayName(request.Model),
+            PairingOutcome approval = await AskUserAsync(
+                request,
+                peerCertificateFingerprint,
                 remoteAddress,
-                CertificateFingerprint.ToShortForm(peerCertificateFingerprint));
+                comparisonCode: null,
+                cancellationToken).ConfigureAwait(false);
 
-            using var approvalTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            approvalTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.ApprovalTimeoutSeconds, 10, 600)));
-
-            bool approved;
-            try
+            if (approval != PairingOutcome.Paired)
             {
-                approved = await _approval.RequestApprovalAsync(approvalRequest, approvalTimeout.Token)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogWarning("Pairing approval from {Address} timed out.", remoteAddress);
-                return new PairingAttemptResult(PairingOutcome.ApprovalTimeout, null);
-            }
-
-            if (!approved)
-            {
-                _logger.LogWarning("Pairing request from {Address} was refused by the user.", remoteAddress);
-                return new PairingAttemptResult(PairingOutcome.Rejected, null);
+                return new PairingAttemptResult(approval, null);
             }
         }
 
         // All gates passed. Burn the token by closing the window: a token is
         // single-use, so even a second legitimate device must be paired deliberately.
+        PairedDevice device = await SaveAsync(request, peerCertificateFingerprint, remoteAddress, cancellationToken)
+            .ConfigureAwait(false);
+        CloseWindow();
+
+        return new PairingAttemptResult(PairingOutcome.Paired, device);
+    }
+
+    /// <summary>
+    /// Pairing without a QR code: the user compares a code on both screens and approves at the PC.
+    /// </summary>
+    private async Task<PairingAttemptResult> TryPairWithCodeAsync(
+        PairRequestArgs request,
+        string peerCertificateFingerprint,
+        string localCertificateFingerprint,
+        string remoteAddress,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.AllowCodePairing)
+        {
+            _logger.LogWarning(
+                "Code pairing from {Address} refused: it is switched off in the configuration.",
+                remoteAddress);
+            return new PairingAttemptResult(PairingOutcome.Disabled, null);
+        }
+
+        if (string.IsNullOrEmpty(localCertificateFingerprint))
+        {
+            // Without this PC's fingerprint there is no code to compare, and approving without
+            // one would be trusting whatever answered on the network.
+            _logger.LogError("Code pairing from {Address} refused: this PC's fingerprint is unknown.", remoteAddress);
+            return new PairingAttemptResult(PairingOutcome.Disabled, null);
+        }
+
+        if (!ClaimMatchesPeer(request, peerCertificateFingerprint, remoteAddress))
+        {
+            return new PairingAttemptResult(PairingOutcome.FingerprintMismatch, null);
+        }
+
+        lock (_sync)
+        {
+            DateTimeOffset now = _clock.UtcNow;
+
+            if (_codeCooldownUntil.TryGetValue(remoteAddress, out DateTimeOffset until) && until > now)
+            {
+                _logger.LogWarning(
+                    "Code pairing from {Address} refused: it was refused recently. Retry after {Until}.",
+                    remoteAddress,
+                    until);
+                return new PairingAttemptResult(PairingOutcome.TooManyAttempts, null);
+            }
+
+            if (_codePromptActive)
+            {
+                _logger.LogWarning(
+                    "Code pairing from {Address} refused: another request is already waiting at the PC.",
+                    remoteAddress);
+                return new PairingAttemptResult(PairingOutcome.Busy, null);
+            }
+
+            _codePromptActive = true;
+        }
+
+        try
+        {
+            string code = PairingCode.Compute(localCertificateFingerprint, peerCertificateFingerprint);
+
+            PairingOutcome approval = await AskUserAsync(
+                request,
+                peerCertificateFingerprint,
+                remoteAddress,
+                code,
+                cancellationToken).ConfigureAwait(false);
+
+            if (approval != PairingOutcome.Paired)
+            {
+                lock (_sync)
+                {
+                    DateTimeOffset now = _clock.UtcNow;
+
+                    foreach (string stale in _codeCooldownUntil.Where(entry => entry.Value <= now).Select(entry => entry.Key).ToList())
+                    {
+                        _codeCooldownUntil.Remove(stale);
+                    }
+
+                    _codeCooldownUntil[remoteAddress] = now + CodePairingCooldown;
+                }
+
+                return new PairingAttemptResult(approval, null);
+            }
+
+            // A QR window that happens to be open is left alone: its token was not used.
+            PairedDevice device = await SaveAsync(request, peerCertificateFingerprint, remoteAddress, cancellationToken)
+                .ConfigureAwait(false);
+
+            return new PairingAttemptResult(PairingOutcome.Paired, device);
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                _codePromptActive = false;
+            }
+        }
+    }
+
+    private bool ClaimMatchesPeer(PairRequestArgs request, string peerCertificateFingerprint, string remoteAddress)
+    {
+        if (string.IsNullOrEmpty(request.ClientFingerprint) ||
+            CertificateFingerprint.Equal(request.ClientFingerprint, peerCertificateFingerprint))
+        {
+            return true;
+        }
+
+        _logger.LogWarning(
+            "Pairing request from {Address} claimed fingerprint {Claimed} but presented {Actual}. " +
+            "Refusing: the request may have been relayed.",
+            remoteAddress,
+            CertificateFingerprint.ToShortForm(request.ClientFingerprint),
+            CertificateFingerprint.ToShortForm(peerCertificateFingerprint));
+
+        return false;
+    }
+
+    /// <summary>
+    /// Asks the person at the PC. Returns <see cref="PairingOutcome.Paired"/> when they allow it.
+    /// </summary>
+    private async Task<PairingOutcome> AskUserAsync(
+        PairRequestArgs request,
+        string peerCertificateFingerprint,
+        string remoteAddress,
+        string? comparisonCode,
+        CancellationToken cancellationToken)
+    {
+        if (!_approval.CanPrompt)
+        {
+            // No UI to ask. Refusing is the only safe answer: treating "nobody
+            // available to consent" as consent would make a leaked QR code
+            // sufficient for access.
+            _logger.LogWarning(
+                "Pairing request from {Address} refused: no interactive UI is available to approve it.",
+                remoteAddress);
+            return PairingOutcome.ApprovalTimeout;
+        }
+
+        var approvalRequest = new PairingApprovalRequest(
+            SanitizeDisplayName(request.DeviceName),
+            SanitizeDisplayName(request.Platform),
+            SanitizeDisplayName(request.Model),
+            remoteAddress,
+            CertificateFingerprint.ToShortForm(peerCertificateFingerprint),
+            comparisonCode is null ? null : PairingCode.ToDisplayForm(comparisonCode));
+
+        using var approvalTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        approvalTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.ApprovalTimeoutSeconds, 10, 600)));
+
+        bool approved;
+        try
+        {
+            approved = await _approval.RequestApprovalAsync(approvalRequest, approvalTimeout.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Pairing approval from {Address} timed out.", remoteAddress);
+            return PairingOutcome.ApprovalTimeout;
+        }
+
+        if (!approved)
+        {
+            _logger.LogWarning("Pairing request from {Address} was refused by the user.", remoteAddress);
+            return PairingOutcome.Rejected;
+        }
+
+        return PairingOutcome.Paired;
+    }
+
+    private async Task<PairedDevice> SaveAsync(
+        PairRequestArgs request,
+        string peerCertificateFingerprint,
+        string remoteAddress,
+        CancellationToken cancellationToken)
+    {
         var device = new PairedDevice
         {
             DeviceId = request.DeviceId,
@@ -358,7 +543,6 @@ public sealed class PairingService : IPairingService
         };
 
         await _store.SaveAsync(device, cancellationToken).ConfigureAwait(false);
-        CloseWindow();
 
         _logger.LogInformation(
             "Device paired. Device={DeviceId} Name={DeviceName} Fingerprint={Fingerprint} " +
@@ -369,7 +553,7 @@ public sealed class PairingService : IPairingService
             remoteAddress,
             string.Join(",", PermissionSet.ToNames(device.Permissions)));
 
-        return new PairingAttemptResult(PairingOutcome.Paired, device);
+        return device;
     }
 
     /// <summary>Maps an outcome to the wire error code the client receives.</summary>
@@ -382,6 +566,7 @@ public sealed class PairingService : IPairingService
         PairingOutcome.ApprovalTimeout => ErrorCodes.PairingTimeout,
         PairingOutcome.FingerprintMismatch => ErrorCodes.PairingTokenInvalid,
         PairingOutcome.InvalidRequest => ErrorCodes.InvalidArguments,
+        PairingOutcome.Busy => ErrorCodes.RateLimited,
         _ => ErrorCodes.Internal,
     };
 
@@ -396,6 +581,7 @@ public sealed class PairingService : IPairingService
         PairingOutcome.FingerprintMismatch =>
             "The pairing request did not match this device's certificate and was refused.",
         PairingOutcome.InvalidRequest => "The pairing request was incomplete.",
+        PairingOutcome.Busy => "Another device is waiting to be approved on the PC. Try again in a moment.",
         _ => "Pairing failed.",
     };
 

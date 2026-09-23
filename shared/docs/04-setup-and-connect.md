@@ -15,17 +15,18 @@ Both halves are already built in this repository. Nothing needs compiling to try
 
 | For | File | Size |
 |---|---|---|
-| PC (Windows 10/11, x64) | folder [`artifacts/release/PC-Remote/`](../../artifacts/release/PC-Remote) — `RemoteAgent.Service.exe` + `RemoteAgent.Session.exe` | ~305 MB |
-| Phone (Android, 64-bit) | [`artifacts/release/Android/PC-Remote.apk`](../../artifacts/release/Android/PC-Remote.apk) | 66 MB |
+| PC (Windows 10/11, x64) | [`artifacts/release/PC-Remote-Setup.exe`](../../artifacts/release/PC-Remote-Setup.exe) | ~85 MB |
+| Phone (Android) | [`artifacts/release/Android/PC-Remote.apk`](../../artifacts/release/Android/PC-Remote.apk) | ~100 MB |
 
-In five steps:
+In four steps:
 
-1. Copy the `PC-Remote` folder to the PC, e.g. to `C:\Program Files\PC-Remote` (§1.1).
-2. In an **administrator** PowerShell there, run `.\RemoteAgent.Service.exe --install` (§1.2).
-3. Install `PC-Remote.apk` on the phone (§2.1).
-4. PC tray icon → **Allow pairing and show QR code**; phone → **Devices → Pair a PC** → scan →
-   approve on the PC (Part 3).
-5. Tap the PC in **Devices**, then open the **Screen** tab (Part 4).
+1. On the PC, run **`PC-Remote-Setup.exe`** and click through it. It installs to
+   `C:\Program Files\PC-Remote`, starts PC-Remote in the background, and adds **PC-Remote** to the
+   Start menu (§1.0).
+2. Install `PC-Remote.apk` on the phone (§2.1).
+3. Phone → **Devices** → your PC appears under *Found on this network* → **Pair**. Both screens
+   show the same six-digit code; click **Allow** on the PC (Part 3).
+4. Tap the PC in **Devices**, then open the **Screen** tab (Part 4).
 
 The rest of this document explains each step, how to build from source instead, and what to do
 when something does not work.
@@ -47,7 +48,33 @@ The target PC needs no .NET runtime. The published executables are self-containe
 
 ## Part 1 — Set up the PC
 
+### 1.0 Install with PC-Remote-Setup.exe (recommended)
+
+Run [`artifacts/release/PC-Remote-Setup.exe`](../../artifacts/release/PC-Remote-Setup.exe) and accept
+the administrator prompt. The installer:
+
+- copies PC-Remote to `C:\Program Files\PC-Remote`;
+- registers the background service and the Private-network firewall rules (§1.2, option A);
+- adds **PC-Remote** to the Start menu, and optionally the desktop. Search for *PC-Remote* in Start
+  like any other app. Opening it shows the pairing window with this PC's address and QR code;
+- offers to switch your network to **Private** if it is currently Public (§1.4);
+- appears in **Settings → Apps** for uninstalling. Uninstalling keeps your settings and pairings in
+  `%ProgramData%\PCRemote`.
+
+Running it again upgrades or repairs an existing installation. SmartScreen may warn that the
+installer is not code-signed: **More info → Run anyway**.
+
+With the installer, skip to §1.3. Sections 1.1 and 1.2 describe setting it up by hand.
+
+To rebuild the installer after changing the code, run `windows/installer/build-installer.ps1`.
+It needs Inno Setup 6 (`winget install --id JRSoftware.InnoSetup -e --scope user`).
+
 ### 1.1 Get the two executables onto the PC
+
+Only needed without the installer. Of the two executables, **neither is meant to be double-clicked**:
+`RemoteAgent.Service.exe` is started by Windows as a service, and `RemoteAgent.Session.exe` is
+started by the service. Opening `RemoteAgent.Session.exe` yourself only brings up the pairing
+window of a PC-Remote that is already running.
 
 PC-Remote is two programs that must sit **in the same folder**:
 
@@ -224,18 +251,42 @@ receive-only.
 
 ## Part 3 — Pair the phone with the PC (once)
 
-Pairing needs three things at once: pairing switched on at the PC, a QR code scanned from the PC's
-screen, and **you approving it on the PC**. A photo of the QR code alone is not enough.
+Pairing always needs **you to click Allow on the PC**. There are two ways to start it, both under
+the **Pair a PC** button on the phone: **Scan QR code** and **Search this network**. Either way the
+phone connects by itself as soon as pairing succeeds.
 
-1. **On the PC:** right-click the PC-Remote tray icon → **Allow pairing and show QR code**. A
-   window shows a QR code and a countdown; the code expires after 5 minutes and works only once.
-2. **On the phone:** open the app → **Devices** tab → **Pair a PC** → point the camera at the QR
-   code.
+### 3.1 Tap the PC on the phone (no QR code)
+
+1. **On the phone:** open the app → **Devices**. Your PC appears under *Found on this network*.
+   Tap **Pair**.
+2. The phone shows a six-digit code, and a dialog on the PC shows a code too.
+3. **On the PC:** if the two codes are **exactly the same**, click **Allow**. If they differ,
+   click **Decline**: something else on the network is answering for your PC.
+4. The phone shows the PC as paired.
+
+The code is computed on each side from both devices' certificates, so it only matches when the
+phone is really talking to your PC. A PC can switch this way off by setting
+`{ "agent": { "pairing": { "allowCodePairing": false } } }` in `config.json`; only QR pairing is left then.
+After you decline a request, that phone must wait a minute before it can ask again.
+
+**The PC is not listed?** Tap **Can't see your PC? → Enter the PC's address** and type the address
+shown in PC-Remote's pairing window (Start menu → PC-Remote), e.g. `192.168.1.20`. This helps when
+the phone's Wi-Fi and the PC's cable are on different parts of the network, where the automatic
+search cannot see across.
+
+### 3.2 Scan the QR code
+
+1. **On the PC:** open **PC-Remote** from the Start menu, or right-click the tray icon → **Allow
+   pairing and show QR code**. A window shows a QR code and a countdown; the code expires after
+   5 minutes and works only once.
+2. **On the phone:** **Devices** tab → **Pair a PC** → **Scan QR code** → point the camera at the
+   QR code. The phone connects straight to the address in the QR code, so this works even where
+   the network search cannot see the PC.
 3. **On the PC:** an approval dialog appears. **Check that the fingerprint matches the one shown
    on the phone**, then approve. If they differ, reject: something other than your PC is answering.
-4. The phone shows the PC as paired, and the QR window closes.
+4. The phone shows the PC as paired and connects, and the QR window closes.
 
-You only do this once per phone. To pair another phone, repeat it.
+You only pair once per phone. To pair another phone, repeat it.
 
 ---
 
@@ -243,8 +294,10 @@ You only do this once per phone. To pair another phone, repeat it.
 
 ### Connecting
 
-Open the app and tap your PC in the **Devices** tab. The app finds the PC by its identity, not its
-IP address, so a changed IP after a router restart does not matter. The banner at the top shows
+Opening the app connects to the PC you used last, by itself. To pick another, tap it in the
+**Devices** tab. The app first connects directly to the PC's last known address, without searching.
+If the PC has moved, it searches the network and finds the PC by its identity rather than its IP
+address, so a changed IP after a router restart does not matter. The banner at the top shows
 the connection state, whether the PC is locked, and the round-trip time.
 
 After the first time, the app reconnects by itself whenever the PC is reachable.
@@ -276,7 +329,8 @@ what this phone currently has.
 |---|---|
 | "Windows protected your PC" when starting the `.exe` | SmartScreen: the executables are not code-signed yet. **More info → Run anyway** (§1.1) |
 | Phone says "App not installed" | A 32-bit-only phone (the APK is arm64), or a copy of the app signed with a different key is already installed. Uninstall the old app first; this also removes its pairings |
-| The PC does not appear in **Devices** | Phone and PC on different networks (e.g. a guest Wi-Fi), or the PC's network set to **Public**. Fix the network profile (§1.4). Some routers block devices from seeing each other ("AP/client isolation"); turn that off |
+| **Found on this network** stays empty | PC-Remote is not installed or not running: run `PC-Remote-Setup.exe`, or open PC-Remote from the Start menu to start it. Otherwise the phone and PC are on different networks (a guest Wi-Fi, a second router or extender), or the PC's network is **Public** (§1.4). Try **Enter the PC's address** (§3.1). Some routers block devices from seeing each other ("AP/client isolation"); turn that off |
+| Opening PC-Remote says it is not running | The service starts a minute or two after Windows starts. Choose **Yes** to start it now |
 | No tray icon | The two executables are not in the same folder, or no one is signed in. Check the logs (§1.3) |
 | QR scan says it cannot reach the PC | Firewall: install with `--install`, or allow the prompt in console mode, and check the network is Private |
 | Fingerprint mismatch after reinstalling Windows or deleting the data folder | The PC has a new identity. Remove it from the app and pair again |

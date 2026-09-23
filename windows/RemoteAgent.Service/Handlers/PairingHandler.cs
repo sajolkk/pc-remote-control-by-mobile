@@ -69,7 +69,12 @@ public sealed class PairRequestHandler : ICommandHandler
         }
 
         PairingAttemptResult result = await _pairing
-            .TryPairAsync(args, session.PeerFingerprint, session.RemoteAddress, cancellationToken)
+            .TryPairAsync(
+                args,
+                session.PeerFingerprint,
+                session.RemoteAddress,
+                cancellationToken,
+                localCertificateFingerprint: PairingIdentity.Fingerprint)
             .ConfigureAwait(false);
 
         if (!result.Succeeded || result.Device is null)
