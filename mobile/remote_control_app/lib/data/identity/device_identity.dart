@@ -1,10 +1,13 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:basic_utils/basic_utils.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
+
+import 'certificate_builder.dart';
 
 /// This device's cryptographic identity: one long-lived key pair and certificate.
 ///
@@ -86,7 +89,12 @@ class DeviceIdentityStore {
     final certificatePem = await _storage.read(key: _certificateKey);
     final privateKeyPem = await _storage.read(key: _privateKeyKey);
 
-    if (deviceId != null && certificatePem != null && privateKeyPem != null) {
+    // Earlier builds stored a certificate BoringSSL cannot parse, so pairing always failed at
+    // the TLS handshake. Such an identity is replaced; the device id is kept.
+    if (deviceId != null &&
+        certificatePem != null &&
+        privateKeyPem != null &&
+        isUsable(certificatePem, privateKeyPem)) {
       final identity = DeviceIdentity(
         deviceId: deviceId,
         certificatePem: certificatePem,
@@ -98,10 +106,22 @@ class DeviceIdentityStore {
       return identity;
     }
 
-    return _cached = await _create();
+    return _cached = await _create(deviceId);
   }
 
-  Future<DeviceIdentity> _create() async {
+  /// Whether this platform's TLS stack accepts the certificate and key.
+  static bool isUsable(String certificatePem, String privateKeyPem) {
+    try {
+      SecurityContext(withTrustedRoots: false)
+        ..useCertificateChainBytes(utf8.encode(certificatePem))
+        ..usePrivateKeyBytes(utf8.encode(privateKeyPem));
+      return true;
+    } on TlsException {
+      return false;
+    }
+  }
+
+  Future<DeviceIdentity> _create(String? existingDeviceId) async {
     // P-256, because it is the one modern curve both Windows SChannel and mobile BoringSSL
     // support for TLS. Ed25519 would be a better key but SChannel cannot use it for TLS,
     // which would force a hand-rolled handshake.
@@ -109,23 +129,17 @@ class DeviceIdentityStore {
     final privateKey = keyPair.privateKey as ECPrivateKey;
     final publicKey = keyPair.publicKey as ECPublicKey;
 
-    final deviceId = const Uuid().v4().replaceAll('-', '');
+    final deviceId = existingDeviceId ?? const Uuid().v4().replaceAll('-', '');
 
     // The subject is informational only: the PC validates the fingerprint, never the name.
-    final dn = {'CN': 'pc-remote-mobile', 'OU': 'PC-Remote'};
-
-    final csrPem = X509Utils.generateEccCsrPem(dn, privateKey, publicKey);
-
-    final certificatePem = X509Utils.generateSelfSignedCertificate(
-      privateKey,
-      csrPem,
-      _validityDays,
-      keyUsage: [KeyUsage.DIGITAL_SIGNATURE, KeyUsage.KEY_AGREEMENT],
-      extKeyUsage: [ExtendedKeyUsage.CLIENT_AUTH],
-      serialNumber: DateTime.now().millisecondsSinceEpoch.toString(),
+    final certificatePem = CertificateBuilder.selfSigned(
+      privateKey: privateKey,
+      publicKey: publicKey,
+      commonName: 'pc-remote-mobile',
+      validity: const Duration(days: _validityDays),
     );
 
-    final privateKeyPem = CryptoUtils.encodeEcPrivateKeyToPem(privateKey);
+    final privateKeyPem = CertificateBuilder.privateKeyPem(privateKey, publicKey);
 
     await _storage.write(key: _deviceIdKey, value: deviceId);
     await _storage.write(key: _certificateKey, value: certificatePem);

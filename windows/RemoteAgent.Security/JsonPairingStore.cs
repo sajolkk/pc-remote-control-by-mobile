@@ -145,6 +145,31 @@ public sealed class JsonPairingStore : IPairingStore
     }
 
     /// <inheritdoc />
+    public async Task<bool> SetBlockedAsync(string deviceId, bool blocked, CancellationToken cancellationToken)
+    {
+        bool updated = false;
+        await MutateAsync(
+            devices =>
+            {
+                if (devices.TryGetValue(deviceId, out PairedDevice? existing))
+                {
+                    devices[deviceId] = existing with { Blocked = blocked };
+                    updated = true;
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (updated)
+        {
+            _logger.LogInformation(
+                blocked ? "Device {DeviceId} disconnected and blocked." : "Device {DeviceId} allowed again.",
+                deviceId);
+        }
+
+        return updated;
+    }
+
+    /// <inheritdoc />
     public async Task<bool> RenameAsync(string deviceId, string deviceName, CancellationToken cancellationToken)
     {
         bool updated = false;
@@ -250,6 +275,7 @@ public sealed class JsonPairingStore : IPairingStore
                     LastAddress = record.LastAddress,
                     Permissions = PermissionSet.FromNames(record.Permissions),
                     ConnectionCount = record.ConnectionCount,
+                    Blocked = record.Blocked,
                 };
             }
 
@@ -311,6 +337,7 @@ public sealed class JsonPairingStore : IPairingStore
                 LastAddress = d.LastAddress,
                 Permissions = PermissionSet.ToNames(d.Permissions),
                 ConnectionCount = d.ConnectionCount,
+                Blocked = d.Blocked,
             }).ToArray(),
         };
 
@@ -359,5 +386,7 @@ public sealed class JsonPairingStore : IPairingStore
         public string[] Permissions { get; init; } = [];
 
         public int ConnectionCount { get; init; }
+
+        public bool Blocked { get; init; }
     }
 }

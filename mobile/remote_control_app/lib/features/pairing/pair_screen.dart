@@ -34,10 +34,25 @@ class PairScreen extends ConsumerStatefulWidget {
 enum _Stage { scanning, connecting, waitingForApproval, success, failed }
 
 class _PairScreenState extends ConsumerState<PairScreen> {
-  final MobileScannerController _scanner = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
-    formats: const [BarcodeFormat.qrCode],
-  );
+  // Replaced, not reused, on every return to scanning: the scanner widget stops its controller
+  // when it leaves the tree, and restarting that one failed with the bare error icon.
+  MobileScannerController _scanner = _newScanner();
+
+  static MobileScannerController _newScanner() => MobileScannerController(
+        detectionSpeed: DetectionSpeed.noDuplicates,
+        formats: const [BarcodeFormat.qrCode],
+      );
+
+  void _restartScanning() {
+    final old = _scanner;
+    setState(() {
+      _scanner = _newScanner();
+      _stage = _Stage.scanning;
+      _message = null;
+      _handling = false;
+    });
+    old.dispose();
+  }
 
   _Stage _stage = _Stage.scanning;
   String? _message;
@@ -83,7 +98,12 @@ class _PairScreenState extends ConsumerState<PairScreen> {
 
   Widget _buildScanner() => Stack(
         children: [
-          MobileScanner(controller: _scanner, onDetect: _onDetect),
+          MobileScanner(
+            key: ObjectKey(_scanner),
+            controller: _scanner,
+            onDetect: _onDetect,
+            errorBuilder: (context, error, _) => _buildScannerError(error),
+          ),
           Positioned(
             left: 0,
             right: 0,
@@ -113,6 +133,40 @@ class _PairScreenState extends ConsumerState<PairScreen> {
           ),
         ],
       );
+
+  Widget _buildScannerError(MobileScannerException error) {
+    final message = switch (error.errorCode) {
+      MobileScannerErrorCode.permissionDenied =>
+        'Camera access is off. Allow the camera for PC Remote in Android Settings → Apps, '
+            'then try again.',
+      MobileScannerErrorCode.unsupported => 'This device has no camera that can scan QR codes.',
+      _ => 'The camera could not start. '
+          '${error.errorDetails?.message ?? error.errorCode.name}',
+    };
+
+    return ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 140),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.no_photography_outlined, color: Colors.white, size: 48),
+              const SizedBox(height: 16),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontSize: 15),
+              ),
+              const SizedBox(height: 20),
+              FilledButton(onPressed: _restartScanning, child: const Text('Try again')),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildProgress(String title, {String? detail}) => Center(
         child: Padding(
@@ -165,11 +219,7 @@ class _PairScreenState extends ConsumerState<PairScreen> {
               children: [
                 if (isError)
                   OutlinedButton(
-                    onPressed: () => setState(() {
-                      _stage = _Stage.scanning;
-                      _message = null;
-                      _handling = false;
-                    }),
+                    onPressed: _restartScanning,
                     child: const Text('Try again'),
                   ),
                 const SizedBox(width: 12),

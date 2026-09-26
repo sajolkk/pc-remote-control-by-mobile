@@ -46,10 +46,6 @@ public static class Program
     {
         AgentPaths paths = AgentPaths.Resolve();
 
-        // The agent shares the service's data directory but writes its own log file, so the two
-        // halves can be read separately when diagnosing which one misbehaved.
-        Directory.CreateDirectory(paths.LogsDirectory);
-
         // Same logging setup and same redaction rules as the service, from the shared project:
         // a separate file so the two halves can be read independently, identical rules so neither
         // can start logging something §7.5 forbids.
@@ -58,7 +54,8 @@ public static class Program
             minimumLevel: "Information",
             retainDays: 14,
             toConsole: false,
-            componentName: "session");
+            componentName: "session",
+            logsDirectory: ResolveLogsDirectory(paths));
 
         try
         {
@@ -214,6 +211,36 @@ public static class Program
         services.AddSingleton<ICommandHandler, MediaIceHandler>();
         services.AddSingleton<ICommandHandler, MediaStopHandler>();
         services.AddSingleton<ICommandHandler, MediaSetQualityHandler>();
+    }
+
+    /// <summary>
+    /// Where this process writes its log: the shared logs directory when this user may write there,
+    /// otherwise <c>%LOCALAPPDATA%\PCRemote\logs</c>.
+    /// </summary>
+    /// <remarks>
+    /// Installed as a service, the data directory is restricted to SYSTEM and Administrators, and the
+    /// agent runs as the ordinary signed-in user. Failing to open the shared directory used to crash
+    /// the agent before it could log anything, so the service restarted it in a loop.
+    /// </remarks>
+    private static string ResolveLogsDirectory(AgentPaths paths)
+    {
+        try
+        {
+            Directory.CreateDirectory(paths.LogsDirectory);
+            string probe = Path.Combine(paths.LogsDirectory, $".write-test-{Environment.ProcessId}");
+            File.WriteAllBytes(probe, []);
+            File.Delete(probe);
+            return paths.LogsDirectory;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            string fallback = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                AgentPaths.ProductFolderName,
+                "logs");
+            Directory.CreateDirectory(fallback);
+            return fallback;
+        }
     }
 
     /// <summary>

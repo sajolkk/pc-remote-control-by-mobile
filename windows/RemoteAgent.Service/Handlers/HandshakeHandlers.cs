@@ -52,6 +52,10 @@ public sealed class PingHandler : ICommandHandler
 /// </remarks>
 public sealed class HelloHandler : ICommandHandler
 {
+    /// <summary>Shown on the phone while the PC's owner has it disconnected.</summary>
+    internal const string BlockedMessage =
+        "Disconnected on the PC. It will reconnect when allowed again in PC-Remote → Devices.";
+
     private readonly ClientSessionManager _sessions;
     private readonly ISessionTokenService _tokens;
     private readonly IPairingStore _pairingStore;
@@ -118,6 +122,13 @@ public sealed class HelloHandler : ICommandHandler
         {
             // The pairing was revoked between the TLS handshake and this command.
             return CommandResult.Fail(ErrorCodes.NotPaired, "This device's pairing was revoked.");
+        }
+
+        if (device.Blocked)
+        {
+            // Not NotPaired: the pairing is kept, and the phone should keep retrying so it
+            // reconnects by itself once the PC's owner allows it again.
+            return CommandResult.Fail(ErrorCodes.PolicyDenied, BlockedMessage, retryable: true);
         }
 
         // A device may rename itself at each handshake: the phone's name is the phone's to
@@ -222,6 +233,11 @@ public sealed class SessionRenewHandler : ICommandHandler
         if (device is null)
         {
             return CommandResult.Fail(ErrorCodes.NotPaired, "This device's pairing was revoked.");
+        }
+
+        if (device.Blocked)
+        {
+            return CommandResult.Fail(ErrorCodes.PolicyDenied, HelloHandler.BlockedMessage, retryable: true);
         }
 
         SessionToken token = _tokens.Issue(device.DeviceId, context.Caller.ConnectionId, device.Permissions);

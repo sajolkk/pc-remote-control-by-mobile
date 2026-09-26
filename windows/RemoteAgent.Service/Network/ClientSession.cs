@@ -374,6 +374,20 @@ public sealed class ClientSession : IAsyncDisposable
             return;
         }
 
+        if (refreshed.Blocked)
+        {
+            // Disconnected by the PC's owner. No pairing.revoked event: the pairing is kept, and
+            // the phone retries on its own until it is allowed again.
+            _logger.LogInformation(
+                "Closing connection {ConnectionId}: device {DeviceId} was disconnected on the PC.",
+                ConnectionId,
+                _device.DeviceId);
+
+            _tokens.RevokeDevice(_device.DeviceId);
+            await CloseAsync(null, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         bool permissionsChanged = refreshed.Permissions != _device.Permissions;
         _device = refreshed;
 

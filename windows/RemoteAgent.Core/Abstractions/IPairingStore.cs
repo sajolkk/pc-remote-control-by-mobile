@@ -46,6 +46,12 @@ public sealed record PairedDevice
 
     /// <summary>Total successful connections, for the device's history view.</summary>
     public int ConnectionCount { get; init; }
+
+    /// <summary>
+    /// Disconnected by the PC's owner. The pairing is kept, but the device is refused until it is
+    /// allowed again.
+    /// </summary>
+    public bool Blocked { get; init; }
 }
 
 /// <summary>
@@ -82,6 +88,9 @@ public interface IPairingStore
 
     /// <summary>Replaces a device's permission set.</summary>
     Task<bool> SetPermissionsAsync(string deviceId, Permission permissions, CancellationToken cancellationToken);
+
+    /// <summary>Blocks or allows a device without removing its pairing.</summary>
+    Task<bool> SetBlockedAsync(string deviceId, bool blocked, CancellationToken cancellationToken);
 
     /// <summary>Renames a device.</summary>
     Task<bool> RenameAsync(string deviceId, string deviceName, CancellationToken cancellationToken);

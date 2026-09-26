@@ -19,6 +19,11 @@
     <AssemblyName>RemoteAgent.Session</AssemblyName>
     <UseWPF>true</UseWPF>
     <!--
+      WPF's font cache builds CultureInfo("en") and throws in globalization-invariant mode, so the
+      pairing window never opened. The service keeps the solution-wide invariant setting.
+    -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!--
       WinForms is enabled solely for NotifyIcon, the tray icon. WPF has no tray support of its own,
       and the alternative is hand-rolling Shell_NotifyIcon through P/Invoke plus a hidden message
       window. Both frameworks ship in the same Windows Desktop runtime, so enabling it adds no new

@@ -30,12 +30,14 @@ public static class AgentLogging
     /// <param name="retainDays">How long to keep rolled files.</param>
     /// <param name="toConsole">Whether to also write to the console (console mode).</param>
     /// <param name="componentName">Short name distinguishing service, agent and UI logs.</param>
+    /// <param name="logsDirectory">Overrides <see cref="AgentPaths.LogsDirectory"/> when set.</param>
     public static Serilog.ILogger Create(
         AgentPaths paths,
         string minimumLevel,
         int retainDays,
         bool toConsole,
-        string componentName)
+        string componentName,
+        string? logsDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
 
@@ -54,7 +56,7 @@ public static class AgentLogging
 
             .WriteTo.File(
                 formatter: new CompactJsonFormatter(),
-                path: Path.Combine(paths.LogsDirectory, $"{componentName}-.jsonl"),
+                path: Path.Combine(logsDirectory ?? paths.LogsDirectory, $"{componentName}-.jsonl"),
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: Math.Max(1, retainDays),
                 fileSizeLimitBytes: 20L * 1024 * 1024,

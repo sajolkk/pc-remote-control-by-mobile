@@ -14,11 +14,10 @@ namespace RemoteAgent.Session.Ui;
 /// service cannot show UI at all, and adding a third process just to host a menu would mean a third
 /// IPC channel to secure for no benefit.</para>
 ///
-/// <para>The menu is deliberately small. Anything that changes security posture — granting
-/// permissions, revoking devices — is not here, because those decisions deserve a considered UI
-/// rather than a right-click, and because the tray icon runs at the user's privilege level with no
-/// additional confirmation. Opening a pairing window is the exception, and it is safe precisely
-/// because it grants nothing on its own: a device still needs the single-use token and an explicit
+/// <para>The menu is deliberately small. Managing devices — disconnecting, allowing, removing —
+/// happens in the Devices window it opens rather than directly from a right-click, so each change
+/// is made with the device list in view. Opening a pairing window is safe precisely because it
+/// grants nothing on its own: a device still needs the single-use token and an explicit
 /// approval.</para>
 /// </remarks>
 [SupportedOSPlatform("windows")]
@@ -41,9 +40,13 @@ public sealed class TrayIcon : IDisposable
         _pairItem = new ToolStripMenuItem("Allow pairing and show QR code…");
         _pairItem.Click += (_, _) => OnPairClicked();
 
+        var devicesItem = new ToolStripMenuItem("Devices…");
+        devicesItem.Click += (_, _) => DevicesRequested?.Invoke(this, EventArgs.Empty);
+
         var menu = new ContextMenuStrip();
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(devicesItem);
         menu.Items.Add(_pairItem);
 
         _icon = new NotifyIcon
@@ -64,6 +67,9 @@ public sealed class TrayIcon : IDisposable
 
     /// <summary>Raised when the user asks to close pairing.</summary>
     public event EventHandler? PairingCancelled;
+
+    /// <summary>Raised when the user asks to see the paired devices.</summary>
+    public event EventHandler? DevicesRequested;
 
     /// <summary>Updates the tooltip and menu to reflect the current state.</summary>
     public void UpdateStatus(string status, bool pairingOpen)

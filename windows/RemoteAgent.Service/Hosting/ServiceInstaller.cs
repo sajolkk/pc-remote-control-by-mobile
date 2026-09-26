@@ -50,15 +50,16 @@ public static class ServiceInstaller
 
         Console.WriteLine($"Registering {displayName} from {executablePath}");
 
-        // binPath must be a single argument containing the quoted executable path. sc.exe is
-        // particular about the space after "binPath=".
+        // sc.exe expects each "option=" and its value as two separate arguments; passing
+        // "start= delayed-auto" as one argument gets quoted into a single token and rejected.
+        // The executable path keeps literal quotes so the registered ImagePath is quoted.
         int result = RunSc(
             "create",
             serviceName,
-            $"binPath= \"{executablePath}\"",
-            "DisplayName= " + displayName,
-            "start= delayed-auto",
-            "obj= LocalSystem");
+            "binPath=", $"\"{executablePath}\"",
+            "DisplayName=", displayName,
+            "start=", "delayed-auto",
+            "obj=", "LocalSystem");
 
         if (result != 0)
         {
@@ -70,7 +71,7 @@ public static class ServiceInstaller
 
         // Restart after 5s, then 10s, then every 60s; reset the counter after a day without
         // failures so a long-running instance is not one crash away from "give up".
-        RunSc("failure", serviceName, "reset= 86400", "actions= restart/5000/restart/10000/restart/60000");
+        RunSc("failure", serviceName, "reset=", "86400", "actions=", "restart/5000/restart/10000/restart/60000");
 
         ConfigureFirewall(executablePath, options);
 

@@ -56,6 +56,7 @@ public sealed class SessionAgentHostedService : BackgroundService
     private bool _sessionSwitchHooked;
     private TrayIcon? _tray;
     private PairingQrWindow? _qrWindow;
+    private DevicesWindow? _devicesWindow;
 
     /// <summary>Creates the host service.</summary>
     public SessionAgentHostedService(
@@ -164,6 +165,7 @@ public sealed class SessionAgentHostedService : BackgroundService
 
         tray.PairingRequested += (_, _) => _ = OpenPairingAsync();
         tray.PairingCancelled += (_, _) => _ = ClosePairingAsync();
+        tray.DevicesRequested += (_, _) => ShowDevices();
 
         _tray = tray;
         await UpdateTrayAsync(pairingOpen: false).ConfigureAwait(false);
@@ -365,6 +367,88 @@ public sealed class SessionAgentHostedService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Opens the Devices window, or brings it forward. Runs on the UI thread (a tray menu click).
+    /// </summary>
+    private void ShowDevices()
+    {
+        try
+        {
+            if (_devicesWindow is not null)
+            {
+                _devicesWindow.Activate();
+                return;
+            }
+
+            DevicesWindow window = DevicesWindow.ShowFor(new DevicesWindowActions(
+                LoadDevicesAsync,
+                (deviceId, blocked) => SendDeviceCommandAsync(
+                    IpcCommands.SetDeviceBlocked,
+                    new JsonObject { ["deviceId"] = deviceId, ["blocked"] = blocked }),
+                deviceId => SendDeviceCommandAsync(
+                    IpcCommands.RemoveDevice,
+                    new JsonObject { ["deviceId"] = deviceId })));
+
+            window.Closed += (_, _) => _devicesWindow = null;
+            _devicesWindow = window;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Opening the Devices window failed.");
+        }
+    }
+
+    private async Task<(IReadOnlyList<DeviceRow>? Devices, string? Error)> LoadDevicesAsync()
+    {
+        IpcResponse response = await _channel.RequestAsync(
+            IpcCommands.ListDevices,
+            null,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (!response.Ok || response.Data?["devices"] is not JsonArray array)
+        {
+            return (null, response.Error?.Message ?? "The PC-Remote service did not respond.");
+        }
+
+        var rows = new List<DeviceRow>();
+        foreach (JsonNode? node in array)
+        {
+            if (node?["deviceId"]?.GetValue<string>() is not { Length: > 0 } deviceId)
+            {
+                continue;
+            }
+
+            rows.Add(new DeviceRow(
+                deviceId,
+                node["deviceName"]?.GetValue<string>() ?? "Mobile device",
+                node["model"]?.GetValue<string>() ?? string.Empty,
+                node["connected"]?.GetValue<bool>() ?? false,
+                node["blocked"]?.GetValue<bool>() ?? false,
+                node["address"]?.GetValue<string>(),
+                DateTimeOffset.TryParse(node["lastSeenAt"]?.GetValue<string>(), out DateTimeOffset seen) ? seen : null));
+        }
+
+        return (rows, null);
+    }
+
+    private async Task<string?> SendDeviceCommandAsync(string command, JsonObject args)
+    {
+        IpcResponse response = await _channel.RequestAsync(
+            command,
+            args,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (!response.Ok)
+        {
+            _logger.LogWarning("{Command} failed: {Code}", command, response.Error?.Code);
+            return response.Error?.Message ?? "The PC-Remote service did not respond.";
+        }
+
+        return null;
+    }
+
     private async Task NotifyAsync(string title, string message, bool isWarning)
     {
         TrayIcon? tray = _tray;
@@ -398,6 +482,8 @@ public sealed class SessionAgentHostedService : BackgroundService
             {
                 _qrWindow?.Close();
                 _qrWindow = null;
+                _devicesWindow?.Close();
+                _devicesWindow = null;
                 tray.Dispose();
                 return true;
             },

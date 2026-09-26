@@ -37,6 +37,7 @@ public sealed class AgentRequestRouter
     private readonly ISessionStateProvider _sessionState;
     private readonly AgentConfigurationWriter _configWriter;
     private readonly IOptionsMonitor<AgentOptions> _options;
+    private readonly IPairingStore _pairingStore;
     private readonly ILogger<AgentRequestRouter> _logger;
 
     /// <summary>Creates the router.</summary>
@@ -49,8 +50,10 @@ public sealed class AgentRequestRouter
         ISessionStateProvider sessionState,
         AgentConfigurationWriter configWriter,
         IOptionsMonitor<AgentOptions> options,
+        IPairingStore pairingStore,
         ILogger<AgentRequestRouter> logger)
     {
+        _pairingStore = pairingStore;
         _pairing = pairing;
         _systemInfo = systemInfo;
         _identityStore = identityStore;
@@ -70,6 +73,9 @@ public sealed class AgentRequestRouter
             IpcCommands.OpenPairing => await OpenPairingAsync(request, cancellationToken).ConfigureAwait(false),
             IpcCommands.ClosePairing => ClosePairing(request),
             IpcCommands.Status => await StatusAsync(request, cancellationToken).ConfigureAwait(false),
+            IpcCommands.ListDevices => await ListDevicesAsync(request, cancellationToken).ConfigureAwait(false),
+            IpcCommands.SetDeviceBlocked => await SetDeviceBlockedAsync(request, cancellationToken).ConfigureAwait(false),
+            IpcCommands.RemoveDevice => await RemoveDeviceAsync(request, cancellationToken).ConfigureAwait(false),
             _ => IpcResponse.Failure(
                 request.Id,
                 ErrorCodes.UnknownCommand,
@@ -179,6 +185,82 @@ public sealed class AgentRequestRouter
                 ["connections"] = connected,
             });
     }
+
+    /// <summary>Every paired device, with whether it has an authenticated connection right now.</summary>
+    private async Task<IpcResponse> ListDevicesAsync(IpcRequest request, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PairedDevice> devices = await _pairingStore.GetAllAsync(cancellationToken).ConfigureAwait(false);
+
+        var list = new JsonArray();
+        foreach (PairedDevice device in devices)
+        {
+            ClientSession? live = _sessions.All.FirstOrDefault(s =>
+                s.IsAuthenticated &&
+                string.Equals(s.Device?.DeviceId, device.DeviceId, StringComparison.Ordinal));
+
+            list.Add(new JsonObject
+            {
+                ["deviceId"] = device.DeviceId,
+                ["deviceName"] = device.DeviceName,
+                ["platform"] = device.Platform,
+                ["model"] = device.Model,
+                ["pairedAt"] = device.PairedAt.UtcDateTime.ToString("O"),
+                ["lastSeenAt"] = device.LastSeenAt?.UtcDateTime.ToString("O"),
+                ["lastAddress"] = device.LastAddress,
+                ["blocked"] = device.Blocked,
+                ["connected"] = live is not null,
+                ["address"] = live?.RemoteAddress,
+            });
+        }
+
+        return IpcResponse.Success(request.Id, new JsonObject { ["devices"] = list });
+    }
+
+    /// <summary>
+    /// Blocks or allows a device. Blocking drops its live connections through the store's change
+    /// notification (<c>ClientSession.RefreshDeviceAsync</c>); allowing lets its next retry in.
+    /// </summary>
+    private async Task<IpcResponse> SetDeviceBlockedAsync(IpcRequest request, CancellationToken cancellationToken)
+    {
+        if (ReadDeviceId(request) is not { } deviceId ||
+            request.Args is not { } args ||
+            !args.TryGetProperty("blocked", out JsonElement blockedElement) ||
+            blockedElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return IpcResponse.Failure(request.Id, ErrorCodes.InvalidArguments, "deviceId and blocked are required.");
+        }
+
+        bool updated = await _pairingStore
+            .SetBlockedAsync(deviceId, blockedElement.GetBoolean(), cancellationToken)
+            .ConfigureAwait(false);
+
+        return updated
+            ? IpcResponse.Success(request.Id)
+            : IpcResponse.Failure(request.Id, ErrorCodes.NotFound, "That device is not paired.");
+    }
+
+    /// <summary>Removes a pairing; the store's change notification drops its live connections.</summary>
+    private async Task<IpcResponse> RemoveDeviceAsync(IpcRequest request, CancellationToken cancellationToken)
+    {
+        if (ReadDeviceId(request) is not { } deviceId)
+        {
+            return IpcResponse.Failure(request.Id, ErrorCodes.InvalidArguments, "deviceId is required.");
+        }
+
+        bool removed = await _pairingStore.RevokeAsync(deviceId, cancellationToken).ConfigureAwait(false);
+
+        return removed
+            ? IpcResponse.Success(request.Id)
+            : IpcResponse.Failure(request.Id, ErrorCodes.NotFound, "That device is not paired.");
+    }
+
+    private static string? ReadDeviceId(IpcRequest request) =>
+        request.Args is { ValueKind: JsonValueKind.Object } args &&
+        args.TryGetProperty("deviceId", out JsonElement id) &&
+        id.ValueKind == JsonValueKind.String &&
+        !string.IsNullOrWhiteSpace(id.GetString())
+            ? id.GetString()
+            : null;
 }
 
 /// <summary>

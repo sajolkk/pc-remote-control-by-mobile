@@ -1,4 +1,4 @@
-; PC-Remote installer (Inno Setup 6). Build it with build-installer.ps1 beside this file, which
+﻿; PC-Remote installer (Inno Setup 6). Build it with build-installer.ps1 beside this file, which
 ; publishes both executables first and then compiles this script.
 ;
 ; What installing does, in order:
@@ -70,8 +70,6 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\RemoteAgent.Session.exe"; Com
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Get-NetConnectionProfile | Where-Object NetworkCategory -eq 'Public' | Set-NetConnectionProfile -NetworkCategory Private"""; \
   StatusMsg: "Setting the network to Private..."; Flags: runhidden waituntilterminated; Tasks: privatenetwork
-Filename: "{app}\RemoteAgent.Service.exe"; Parameters: "--install"; \
-  StatusMsg: "Registering and starting the PC-Remote service..."; Flags: runhidden waituntilterminated
 Filename: "{app}\RemoteAgent.Session.exe"; Parameters: "--after-install"; \
   Description: "Open PC-Remote now"; Flags: postinstall nowait skipifsilent runasoriginaluser
 
@@ -114,4 +112,22 @@ begin
   // Give the service control manager a moment to finish deleting, or "sc create" in --install
   // fails with "marked for deletion".
   Sleep(2000);
+end;
+
+// The service is registered here rather than in [Run] so a failure is reported: a [Run] entry's
+// exit code is ignored, and the installer would otherwise finish "successfully" with no service.
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+
+  WizardForm.StatusLabel.Caption := 'Registering and starting the PC-Remote service...';
+  if not Exec(ExpandConstant('{app}\RemoteAgent.Service.exe'), '--install', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    SuppressibleMsgBox(
+      'The PC-Remote service could not be registered (exit code ' + IntToStr(ResultCode) + ').' + #13#10#13#10 +
+      'Run PC-Remote-Setup.exe again. If this keeps happening, look in %ProgramData%\PCRemote\logs.',
+      mbError, MB_OK, IDOK);
 end;

@@ -46,6 +46,18 @@ public static class IpcCommands
     /// <summary>Agent asks the service for current status, to render in the tray menu.</summary>
     public const string Status = "ipc.status";
 
+    /// <summary>Agent asks for every paired device and whether it is connected right now.</summary>
+    public const string ListDevices = "ipc.list_devices";
+
+    /// <summary>
+    /// Agent disconnects and blocks a device (<c>blocked: true</c>) or allows it again
+    /// (<c>blocked: false</c>). The pairing is kept either way.
+    /// </summary>
+    public const string SetDeviceBlocked = "ipc.set_device_blocked";
+
+    /// <summary>Agent removes a device's pairing; it must pair again to connect.</summary>
+    public const string RemoveDevice = "ipc.remove_device";
+
     /// <summary>
     /// Service tells the agent a control connection closed or its device's permissions changed.
     /// </summary>
