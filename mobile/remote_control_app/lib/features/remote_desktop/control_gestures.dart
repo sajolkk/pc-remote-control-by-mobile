@@ -30,9 +30,14 @@ enum PointerStyle {
 /// - three fingers dragged move the zoomed view.
 ///
 /// [PointerStyle.direct]: tap = left click there; a second tap straight after, in the same place,
-/// lands on exactly the same pixel so Windows sees a double click; hold still = right click; drag =
-/// press the left button where the finger went down, move, release where it lifts. Touches on the
-/// letterbox bars do nothing.
+/// lands on exactly the same pixel so Windows sees a double click; swipe = scroll what is under the
+/// finger, as on any phone; hold still, then lift = right click; hold still, then move = press the
+/// left button where the finger went down, drag, release where it lifts. Touches on the letterbox
+/// bars do nothing.
+///
+/// A swipe scrolls rather than drags because that is what a thumb does without thinking, and a
+/// swipe that drags selects text or moves whatever it started on. Dragging is the deliberate act,
+/// so it is the one that takes the hold.
 ///
 /// [PointerStyle.trackpad]: drag = move the cursor; tap = left click at the cursor; two-finger tap =
 /// right click; tap, then touch again and drag = drag with the left button held.
@@ -58,8 +63,8 @@ class ControlGestures {
   /// The same for the trackpad, where the first pixels of movement matter more.
   static const trackpadSlop = 4.0;
 
-  /// How long a still finger is held for a right click.
-  static const longPressTimeout = Duration(milliseconds: 500);
+  /// How long a still finger is held before it means a right click, or the start of a drag.
+  static const longPressTimeout = Duration(milliseconds: 450);
 
   /// The longest touch that is still a tap on the trackpad.
   static const tapTimeout = Duration(milliseconds: 250);
@@ -167,7 +172,21 @@ class ControlGestures {
       case _Phase.directPending:
         if ((position - _downAt).distance < dragSlop) return;
 
+        // Moving before the hold: a swipe, which scrolls whatever the finger landed on.
         _longPress?.cancel();
+        _scrollOnMonitor = _downOnMonitor;
+        _wheel.reset();
+        _lastFocal = _downAt;
+        _phase = _Phase.directScroll;
+        _scrollTo(position);
+
+      case _Phase.directScroll:
+        _scrollTo(position);
+
+      case _Phase.directHeld:
+        if ((position - _downAt).distance < dragSlop) return;
+
+        // Moving after the hold: the deliberate drag.
         _pressModifiers();
         _sender.button(
           MouseButton.left,
@@ -238,6 +257,10 @@ class ControlGestures {
       case _Phase.directPending:
         _longPress?.cancel();
         _directTap(time);
+
+      case _Phase.directHeld:
+        // Held and lifted without moving: the right click.
+        _click(MouseButton.right, at: _downOnMonitor);
 
       case _Phase.directDrag:
         _releaseButton();
@@ -319,9 +342,9 @@ class ControlGestures {
   void _onLongPress() {
     if (_phase != _Phase.directPending) return;
 
-    _phase = _Phase.spent;
+    // Nothing is sent yet: what the hold means depends on whether the finger now moves or lifts.
+    _phase = _Phase.directHeld;
     onLongPress?.call();
-    _click(MouseButton.right, at: _downOnMonitor);
   }
 
   void _directTap(Duration time) {
@@ -466,6 +489,12 @@ enum _Phase {
 
   /// Direct: one finger down that has not yet moved, lifted or been held long enough.
   directPending,
+
+  /// Direct: one finger swiping, which scrolls.
+  directScroll,
+
+  /// Direct: one finger held still long enough; it will right-click on lifting or drag on moving.
+  directHeld,
 
   /// Direct: the left button is down and following the finger.
   directDrag,

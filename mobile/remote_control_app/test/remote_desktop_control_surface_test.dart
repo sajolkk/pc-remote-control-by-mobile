@@ -150,6 +150,7 @@ void main() {
       await pumpSurface(tester, sender: sender, transform: transform, enabled: true);
 
       final finger = await tester.startGesture(const Offset(100, 350));
+      await tester.pump(ControlGestures.longPressTimeout + const Duration(milliseconds: 1));
       await finger.moveTo(const Offset(200, 400));
       expect(transport.commands.first, InputCommands.mouseButton);
 

@@ -423,8 +423,9 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
       [
         'Tap: left click where you touch',
         'Double-tap: double click',
-        'Touch and hold: right click',
-        'Drag: drag with the left button held',
+        'Swipe: scroll what is under your finger',
+        'Touch and hold, then lift: right click',
+        'Touch and hold, then move: drag with the left button held (select text, move windows)',
       ],
     ),
     (
@@ -605,8 +606,8 @@ enum _ControlMode {
 
   /// The one-line reminder shown when the mode is chosen.
   String get hint => switch (this) {
-        direct => 'Touch: tap to click, hold for right click, drag to drag. Two fingers scroll, '
-            'pinch zooms, three fingers move the view.',
+        direct => 'Touch: tap to click, swipe to scroll, hold for right click, hold then move to '
+            'drag. Pinch zooms, three fingers move the view.',
         trackpad => 'Trackpad: drag to move the cursor, tap to click, two-finger tap for right '
             'click. Two fingers scroll, pinch zooms, three fingers move the view.',
         _ => label,

@@ -106,32 +106,52 @@ void main() {
       rig.gestures.reset();
     });
 
-    _rigTest('holding still is a right click, and lifting afterwards does nothing more', PointerStyle.direct, (tester, rig) async {
+    _rigTest('holding still and lifting is a right click', PointerStyle.direct, (tester, rig) async {
 
       rig.gestures.down(1, const Offset(40, 40), rig.at(0));
       await tester.pump(ControlGestures.longPressTimeout - const Duration(milliseconds: 1));
-      expect(rig.log, isEmpty);
+      expect(rig.longPresses, 0);
 
       await tester.pump(const Duration(milliseconds: 2));
-      expect(rig.log, ['input.mouse_click {button: right, count: 1, x: 0.4, y: 0.4, monitorId: mon-a}']);
       expect(rig.longPresses, 1);
+      expect(rig.log, isEmpty, reason: 'the hold may still turn into a drag');
 
-      rig.gestures.move(1, const Offset(60, 60), rig.at(600));
       rig.gestures.up(1, rig.at(700));
+      expect(rig.log, ['input.mouse_click {button: right, count: 1, x: 0.4, y: 0.4, monitorId: mon-a}']);
+    });
+
+    _rigTest('a swipe scrolls what is under the finger instead of dragging it', PointerStyle.direct, (tester, rig) async {
+
+      rig.gestures.down(1, const Offset(50, 80), rig.at(0));
+      rig.gestures.move(1, const Offset(50, 77), rig.at(10));
+      expect(rig.log, isEmpty, reason: 'inside the slop: still a possible tap');
+
+      // Up by 40: the content follows the finger, which is the wheel turning towards the user.
+      rig.gestures.move(1, const Offset(50, 40), rig.at(40));
+      await tester.pump(frame);
+      rig.gestures.up(1, rig.at(80));
+
+      expect(rig.log, ['input.scroll {dx: 0, dy: -240, x: 0.5, y: 0.8, monitorId: mon-a}']);
+      expect(rig.log.join(), isNot(contains('mouse_button')), reason: 'a swipe must never select or drag');
+
+      // The long-press timer died with the swipe.
+      await tester.pump(const Duration(seconds: 1));
+      expect(rig.longPresses, 0);
       expect(rig.log, hasLength(1));
     });
 
-    _rigTest('a drag presses where the finger went down, follows it, and releases', PointerStyle.direct, (tester, rig) async {
+    _rigTest('holding, then moving, drags: press where it went down, follow, release', PointerStyle.direct, (tester, rig) async {
 
       rig.gestures.down(1, const Offset(10, 10), rig.at(0));
-      rig.gestures.move(1, const Offset(13, 10), rig.at(10));
-      expect(rig.log, isEmpty, reason: 'inside the slop: still a possible tap');
+      await tester.pump(ControlGestures.longPressTimeout + const Duration(milliseconds: 1));
+      rig.gestures.move(1, const Offset(13, 10), rig.at(510));
+      expect(rig.log, isEmpty, reason: 'inside the slop: still a possible right click');
 
-      rig.gestures.move(1, const Offset(30, 10), rig.at(20));
+      rig.gestures.move(1, const Offset(30, 10), rig.at(520));
       await tester.pump(frame);
-      rig.gestures.move(1, const Offset(50, 20), rig.at(40));
-      rig.gestures.move(1, const Offset(60, 30), rig.at(45));
-      rig.gestures.up(1, rig.at(60));
+      rig.gestures.move(1, const Offset(50, 20), rig.at(540));
+      rig.gestures.move(1, const Offset(60, 30), rig.at(545));
+      rig.gestures.up(1, rig.at(560));
 
       expect(rig.log, [
         'input.mouse_button {button: left, down: true, x: 0.1, y: 0.1, monitorId: mon-a}',
@@ -141,17 +161,14 @@ void main() {
         'input.mouse_move {x: 0.6, y: 0.3, monitorId: mon-a}',
         'input.mouse_button {button: left, down: false}',
       ]);
-
-      // The long-press timer died with the drag.
-      await tester.pump(const Duration(seconds: 1));
-      expect(rig.log, hasLength(5));
     });
 
     _rigTest('a drag that leaves the picture is pinned to its edge, not dropped', PointerStyle.direct, (tester, rig) async {
 
       rig.gestures.down(1, const Offset(50, 90), rig.at(0));
-      rig.gestures.move(1, const Offset(50, 150), rig.at(20));
-      rig.gestures.up(1, rig.at(40));
+      await tester.pump(ControlGestures.longPressTimeout + const Duration(milliseconds: 1));
+      rig.gestures.move(1, const Offset(50, 150), rig.at(520));
+      rig.gestures.up(1, rig.at(540));
 
       expect(rig.log[1], 'input.mouse_move {x: 0.5, y: 1.0, monitorId: mon-a}');
       expect(rig.log.last, 'input.mouse_button {button: left, down: false}');
@@ -195,7 +212,8 @@ void main() {
     _rigTest('a cancelled drag still releases the button', PointerStyle.direct, (tester, rig) async {
 
       rig.gestures.down(1, const Offset(10, 10), rig.at(0));
-      rig.gestures.move(1, const Offset(40, 10), rig.at(20));
+      await tester.pump(ControlGestures.longPressTimeout + const Duration(milliseconds: 1));
+      rig.gestures.move(1, const Offset(40, 10), rig.at(520));
       rig.gestures.cancel(1);
 
       expect(rig.log.last, 'input.mouse_button {button: left, down: false}');
@@ -393,13 +411,14 @@ void main() {
     _rigTest('lets go of a held button and forgets the gesture', PointerStyle.direct, (tester, rig) async {
 
       rig.gestures.down(1, const Offset(10, 10), rig.at(0));
-      rig.gestures.move(1, const Offset(40, 10), rig.at(20));
+      await tester.pump(ControlGestures.longPressTimeout + const Duration(milliseconds: 1));
+      rig.gestures.move(1, const Offset(40, 10), rig.at(520));
       rig.gestures.reset();
       expect(rig.log.last, 'input.mouse_button {button: left, down: false}');
 
       final sent = rig.log.length;
-      rig.gestures.move(1, const Offset(80, 10), rig.at(40));
-      rig.gestures.up(1, rig.at(60));
+      rig.gestures.move(1, const Offset(80, 10), rig.at(540));
+      rig.gestures.up(1, rig.at(560));
       expect(rig.log, hasLength(sent), reason: 'the finger still down belongs to nothing now');
     });
 
