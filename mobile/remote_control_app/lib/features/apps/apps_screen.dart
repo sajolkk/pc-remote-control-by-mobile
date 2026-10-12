@@ -54,6 +54,7 @@ class _AppsScreenState extends ConsumerState<AppsScreen> {
   List<_App> _apps = const [];
   List<Map<String, dynamic>> _browsers = const [];
   bool _loading = false;
+  bool _wasGranted = true;
   bool _runningOnly = false;
   String? _error;
 
@@ -77,7 +78,17 @@ class _AppsScreenState extends ConsumerState<AppsScreen> {
       return const NotConnectedView();
     }
 
-    if (!status.granted(Permissions.launchApps)) {
+    // The first load ran, and was refused, before the permission existed. When the PC's owner
+    // switches it on the list has to be fetched then, not on the next manual refresh.
+    final granted = status.granted(Permissions.launchApps);
+    if (granted && !_wasGranted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _load();
+      });
+    }
+    _wasGranted = granted;
+
+    if (!granted) {
       return Scaffold(
         appBar: AppBar(title: const Text('Apps')),
         body: const Center(

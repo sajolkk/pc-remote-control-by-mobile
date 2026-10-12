@@ -104,6 +104,10 @@ public sealed class SecretRedactionEnricher : ILogEventEnricher
         "password", "passwd", "secret", "token", "credential", "privatekey", "private_key",
         "apikey", "api_key", "clipboard", "filecontent", "file_content", "content",
         "pin", "passphrase", "pfx", "certificatedata",
+
+        // Remote input (§7.5): nothing typed and no key code is ever logged. No call site passes
+        // one, and these names make sure a future one would be blanked rather than written.
+        "typedtext", "inputtext", "virtualkey", "keycode", "scancode",
     ];
 
     /// <inheritdoc />

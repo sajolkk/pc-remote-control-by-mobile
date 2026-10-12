@@ -5,7 +5,9 @@
 ;   1. stops and removes any earlier PC-Remote service, so its files can be replaced;
 ;   2. copies RemoteAgent.Service.exe and RemoteAgent.Session.exe to Program Files\PC-Remote;
 ;   3. runs "RemoteAgent.Service.exe --install", which registers the service, adds the three
-;      Private-network firewall rules and starts it (the service then starts the tray agent);
+;      Private-network firewall rules — plus two more that admit only the VPN address ranges in
+;      network.remoteAccessSubnets (Tailscale's by default) on any network profile, for reaching
+;      the PC from outside the LAN — and starts it (the service then starts the tray agent);
 ;   4. adds a "PC-Remote" Start-menu entry. Opening it shows the pairing window.
 ;
 ; Uninstalling runs "--uninstall" (service and firewall rules). Settings, keys and pairings in
@@ -42,6 +44,7 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 LZMAUseSeparateProcess=yes
 WizardStyle=modern
+SetupIconFile=..\assets\pc-remote.ico
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\RemoteAgent.Session.exe
 ; The service is stopped explicitly in PrepareToInstall; this also closes anything else holding

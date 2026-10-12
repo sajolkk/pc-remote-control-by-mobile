@@ -27,9 +27,12 @@ class CertificatePinMismatch implements Exception {
 
 /// Raised when the transport fails in an ordinary way.
 class ControlChannelException implements Exception {
-  const ControlChannelException(this.message);
+  const ControlChannelException(this.message, {this.code});
 
   final String message;
+
+  /// The PC's error code when it refused, null for a transport failure.
+  final String? code;
 
   @override
   String toString() => message;
@@ -152,6 +155,11 @@ class ControlClient {
       throw CertificatePinMismatch(expectedFingerprint, actualFingerprint ?? 'unknown');
     }
 
+    // Code pairing has no pin to compare against and reads this to compute the code instead.
+    final peer = socket.peerCertificate;
+    serverFingerprint =
+        actualFingerprint ?? (peer == null ? null : DeviceIdentityStore.fingerprintOfDer(peer.der));
+
     socket.setOption(SocketOption.tcpNoDelay, true);
     tlsDescription = socket.selectedProtocol ?? 'TLS';
 
@@ -229,7 +237,10 @@ class ControlClient {
     );
 
     if (!response.ok) {
-      throw ControlChannelException(response.error?.message ?? 'The handshake was refused.');
+      throw ControlChannelException(
+        response.error?.message ?? 'The handshake was refused.',
+        code: response.error?.code,
+      );
     }
 
     final result = HelloResult.fromJson(response.map);

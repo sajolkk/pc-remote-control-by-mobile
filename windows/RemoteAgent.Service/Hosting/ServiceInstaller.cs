@@ -126,11 +126,22 @@ public static class ServiceInstaller
     private const string DiscoveryRule = "PC-Remote discovery (UDP)";
     private const string MediaRule = "PC-Remote screen streaming (UDP)";
 
-    private static readonly string[] FirewallRuleNames = [ControlRule, DiscoveryRule, MediaRule];
+    /// <summary>Suffix of the extra rules that admit a VPN overlay's address range on any profile.</summary>
+    private const string RemoteAccessSuffix = " - VPN";
+
+    private static readonly string[] FirewallRuleNames =
+    [
+        ControlRule,
+        DiscoveryRule,
+        MediaRule,
+        ControlRule + RemoteAccessSuffix,
+        MediaRule + RemoteAccessSuffix,
+    ];
 
     /// <summary>
     /// Opens exactly the ports PC-Remote listens on, for exactly its own executables, on private
-    /// networks only.
+    /// networks — plus, for configured VPN ranges only, on any network (see
+    /// <see cref="ConfigureRemoteAccessRules"/>).
     /// </summary>
     /// <remarks>
     /// <para>Each rule is bound to a program path as well as a port range, so another process
@@ -188,6 +199,116 @@ public static class ServiceInstaller
                     $"Allow {protocol} {ports} for {program} on private networks manually.");
             }
         }
+
+        ConfigureRemoteAccessRules(rules, network);
+    }
+
+    /// <summary>
+    /// Adds the rules that let a VPN overlay reach the PC whatever profile Windows gave its adapter.
+    /// </summary>
+    /// <remarks>
+    /// <para>The rules above are Private-profile only, on purpose. But a VPN adapter is a network
+    /// of its own to Windows, and it is very often classified Public: WireGuard and ZeroTier
+    /// tunnels have no gateway to identify, so they land in "Unidentified network", which is
+    /// Public. (Tailscale asks Windows to mark its adapter Private, which usually but not always
+    /// succeeds.) On a Public adapter the Private rules never match, and the phone's connection
+    /// through the VPN is dropped by the firewall before the agent sees it.</para>
+    ///
+    /// <para>Opening the ports on the Public profile outright would also open them on café Wi-Fi.
+    /// Instead these rules apply on every profile but only to remote addresses inside the ranges
+    /// listed in <c>network.remoteAccessSubnets</c> — by default the carrier-grade NAT block
+    /// Tailscale numbers its devices from. A peer in such a range still has to present a paired
+    /// certificate; the rule decides who may attempt a TLS handshake, not who may get in.</para>
+    ///
+    /// <para>Discovery gets no such rule: it is a LAN broadcast, and broadcasts do not cross a
+    /// VPN. A phone on the overlay connects to the PC's VPN address directly.</para>
+    /// </remarks>
+    private static void ConfigureRemoteAccessRules(
+        (string Name, string Program, string Protocol, string Ports)[] rules,
+        NetworkOptions network)
+    {
+        // Entries come from a configuration file and end up on a command line, so each one is
+        // parsed and re-printed rather than passed through: what netsh receives is an address and
+        // a prefix length this code formatted, never text somebody typed.
+        string[] subnets =
+        [
+            .. (network.RemoteAccessSubnets ?? [])
+                .Select(NormalizeCidr)
+                .Where(static cidr => cidr is not null)
+                .Select(static cidr => cidr!)
+                .Distinct(StringComparer.Ordinal),
+        ];
+
+        foreach ((string name, string program, string protocol, string ports) in rules)
+        {
+            if (name == DiscoveryRule)
+            {
+                continue;
+            }
+
+            string ruleName = name + RemoteAccessSuffix;
+
+            // Deleted first, as above — and deleted even when no range is configured, so that
+            // clearing the setting and reinstalling closes the opening again.
+            RunTool("netsh.exe", "advfirewall", "firewall", "delete", "rule", $"name={ruleName}");
+
+            if (subnets.Length == 0)
+            {
+                continue;
+            }
+
+            int exit = RunTool(
+                "netsh.exe",
+                "advfirewall", "firewall", "add", "rule",
+                $"name={ruleName}",
+                "dir=in",
+                "action=allow",
+                $"program={program}",
+                $"protocol={protocol}",
+                $"localport={ports}",
+                $"remoteip={string.Join(',', subnets)}",
+                "profile=any",
+                "enable=yes");
+
+            if (exit != 0)
+            {
+                Console.Error.WriteLine(
+                    $"Could not add the firewall rule \"{ruleName}\" (exit code {exit}). " +
+                    $"To reach this PC over a VPN, allow {protocol} {ports} for {program} from " +
+                    $"{string.Join(", ", subnets)} manually, or set the VPN adapter's network to Private.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Parses <c>address/prefix</c> and prints it back in canonical form, or returns null.
+    /// </summary>
+    public static string? NormalizeCidr(string? entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry))
+        {
+            return null;
+        }
+
+        string[] parts = entry.Trim().Split('/', 2);
+
+        if (parts.Length != 2 ||
+            !System.Net.IPAddress.TryParse(parts[0], out System.Net.IPAddress? address) ||
+            !int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int prefix))
+        {
+            return null;
+        }
+
+        int bits = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
+
+        // A zero-length prefix is "everyone", which is not a VPN range and would turn these rules
+        // into an unconditional opening on public networks.
+        if (prefix < 1 || prefix > bits)
+        {
+            return null;
+        }
+
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{address}/{prefix}");
     }
 
     private static bool IsElevated()

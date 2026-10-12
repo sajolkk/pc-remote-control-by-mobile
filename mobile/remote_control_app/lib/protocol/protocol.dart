@@ -79,6 +79,20 @@ class Commands {
   static const mediaIce = 'media.ice';
   static const mediaStop = 'media.stop';
   static const mediaSetQuality = 'media.set_quality';
+
+  // Open windows (LaunchApps). Shapes are in window_messages.dart.
+  static const windowList = 'window.list';
+  static const windowAction = 'window.action';
+
+  // Files on the PC (ManageFiles). Shapes are in file_messages.dart. There is deliberately no
+  // upload or download here: the PC does not implement them.
+  static const fileList = 'file.list';
+  static const fileOpen = 'file.open';
+  static const fileCreate = 'file.create';
+  static const fileRename = 'file.rename';
+  static const fileCopy = 'file.copy';
+  static const fileMove = 'file.move';
+  static const fileDelete = 'file.delete';
 }
 
 /// Event topics the PC pushes.
@@ -146,7 +160,7 @@ class Permissions {
         viewScreen => 'View screen',
         controlInput => 'Control mouse and keyboard',
         launchApps => 'Open and close apps',
-        manageFiles => 'Transfer files',
+        manageFiles => 'Manage files',
         powerControls => 'Power controls',
         clipboard => 'Clipboard',
         _ => name,
@@ -167,6 +181,7 @@ class Capabilities {
   static const browser = 'browser';
   static const clipboard = 'clipboard';
   static const files = 'files';
+  static const windows = 'windows';
   static const volume = 'volume';
   static const powerSleep = 'power.sleep';
   static const powerShutdown = 'power.shutdown';

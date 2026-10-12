@@ -44,6 +44,42 @@ public interface IPairingApprovalService
     /// certificate fingerprint. Returns false on refusal, timeout, or no UI.
     /// </summary>
     Task<bool> RequestApprovalAsync(PairingApprovalRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Prompts for approval and also reports what the person chose to grant.
+    /// </summary>
+    /// <remarks>
+    /// The default implementation asks the yes/no question and grants nothing beyond the default
+    /// permissions, so an implementation with no way to ask for more — and every test double
+    /// written before this existed — keeps behaving exactly as it did. Only an implementation whose
+    /// prompt genuinely offers the choice overrides this.
+    /// </remarks>
+    async Task<PairingApprovalDecision> RequestDecisionAsync(
+        PairingApprovalRequest request,
+        CancellationToken cancellationToken) =>
+        await RequestApprovalAsync(request, cancellationToken).ConfigureAwait(false)
+            ? PairingApprovalDecision.ApprovedWithDefaults
+            : PairingApprovalDecision.Declined;
+}
+
+/// <summary>
+/// What the person at the PC answered to a pairing prompt.
+/// </summary>
+/// <param name="Approved">Whether they allowed the device to pair.</param>
+/// <param name="GrantFullControl">
+/// Whether they also ticked "give this device full control". Meaningless unless
+/// <paramref name="Approved"/> is true, and ignored in that case.
+/// </param>
+public readonly record struct PairingApprovalDecision(bool Approved, bool GrantFullControl)
+{
+    /// <summary>Refused, or nobody answered.</summary>
+    public static PairingApprovalDecision Declined { get; } = new(false, false);
+
+    /// <summary>Allowed, with the default permissions only.</summary>
+    public static PairingApprovalDecision ApprovedWithDefaults { get; } = new(true, false);
+
+    /// <summary>Allowed, with every permission group.</summary>
+    public static PairingApprovalDecision ApprovedWithFullControl { get; } = new(true, true);
 }
 
 /// <summary>

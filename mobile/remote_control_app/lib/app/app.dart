@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../features/apps/apps_screen.dart';
+import '../features/apps/manage_screen.dart';
 import '../features/devices/devices_screen.dart';
 import '../features/remote_desktop/remote_desktop_screen.dart';
 import '../features/settings/settings_screen.dart';
@@ -92,10 +92,12 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         selectedIcon: Icon(Icons.power_settings_new),
         label: 'System',
       ),
+
+      // Apps, open windows and files share this one destination: the bar is full at five.
       const NavigationDestination(
-        icon: Icon(Icons.apps_outlined),
-        selectedIcon: Icon(Icons.apps),
-        label: 'Apps',
+        icon: Icon(Icons.dashboard_outlined),
+        selectedIcon: Icon(Icons.dashboard),
+        label: 'Manage',
       ),
       const NavigationDestination(
         icon: Icon(Icons.settings_outlined),
@@ -115,7 +117,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
               // Built only while selected, so leaving the tab disposes it and stops the stream.
               1 => const RemoteDesktopScreen(),
               2 => const SystemScreen(),
-              3 => const AppsScreen(),
+              3 => const ManageScreen(),
               _ => const SettingsScreen(),
             },
           ),
@@ -196,6 +198,9 @@ class _ConnectionBanner extends StatelessWidget {
       return '$name — nobody signed in. Power controls still work.';
     }
 
-    return tls == null ? 'Connected to $name' : 'Connected to $name · $tls';
+    // Worth saying, because it explains a slower connection and confirms the VPN route works.
+    final route = status.viaRemoteAddress ? ' via its remote address' : '';
+
+    return tls == null ? 'Connected to $name$route' : 'Connected to $name$route · $tls';
   }
 }

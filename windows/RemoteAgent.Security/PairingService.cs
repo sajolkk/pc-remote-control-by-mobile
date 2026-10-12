@@ -140,7 +140,7 @@ public sealed class PairingService : IPairingService
     private readonly IPairingApprovalService _approval;
     private readonly IClock _clock;
     private readonly ILogger<PairingService> _logger;
-    private readonly PairingOptions _options;
+    private readonly Func<PairingOptions> _currentOptions;
     private readonly object _sync = new();
 
     private static readonly TimeSpan CodePairingCooldown = TimeSpan.FromMinutes(1);
@@ -151,19 +151,48 @@ public sealed class PairingService : IPairingService
     private int _failedAttempts;
     private bool _codePromptActive;
 
-    /// <summary>Creates the service.</summary>
+    /// <summary>Creates the service over a fixed set of options.</summary>
     public PairingService(
         IPairingStore store,
         IPairingApprovalService approval,
         IClock clock,
         ILogger<PairingService> logger,
         PairingOptions options)
+        : this(store, approval, clock, logger, Fixed(options))
+    {
+    }
+
+    /// <summary>Creates the service.</summary>
+    /// <param name="store">Pairing records.</param>
+    /// <param name="approval">Asks the person at the PC.</param>
+    /// <param name="clock">Time source.</param>
+    /// <param name="logger">Diagnostics.</param>
+    /// <param name="currentOptions">
+    /// Returns the options in force right now. Read on every use rather than captured once: the
+    /// configuration file is reloaded whenever it is written, which replaces the options object,
+    /// and opening pairing mode is itself such a write. A captured object would go on reporting
+    /// the value pairing mode had at startup, and every QR pairing would be refused as "not open".
+    /// </param>
+    public PairingService(
+        IPairingStore store,
+        IPairingApprovalService approval,
+        IClock clock,
+        ILogger<PairingService> logger,
+        Func<PairingOptions> currentOptions)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _approval = approval ?? throw new ArgumentNullException(nameof(approval));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _currentOptions = currentOptions ?? throw new ArgumentNullException(nameof(currentOptions));
+    }
+
+    private PairingOptions Options => _currentOptions();
+
+    private static Func<PairingOptions> Fixed(PairingOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return () => options;
     }
 
     /// <inheritdoc />
@@ -206,7 +235,7 @@ public sealed class PairingService : IPairingService
             window = new PairingWindow(
                 Base64Url.GenerateToken(TokenBytes),
                 now,
-                now.AddMinutes(Math.Clamp(_options.WindowMinutes, 1, 60)));
+                now.AddMinutes(Math.Clamp(Options.WindowMinutes, 1, 60)));
 
             _window = window;
             _failedAttempts = 0;
@@ -217,7 +246,7 @@ public sealed class PairingService : IPairingService
         _logger.LogInformation(
             "Pairing window opened, closing at {ExpiresAt}. Approval required: {RequireApproval}",
             window.ExpiresAt,
-            _options.RequireLocalApproval);
+            Options.RequireLocalApproval);
 
         WindowChanged?.Invoke(this, window);
         return window;
@@ -278,7 +307,7 @@ public sealed class PairingService : IPairingService
         string expectedToken;
         lock (_sync)
         {
-            if (!_options.AllowPairing || !IsWindowLive())
+            if (!Options.AllowPairing || !IsWindowLive())
             {
                 _logger.LogWarning(
                     "Pairing attempt from {Address} refused: pairing mode is not open.",
@@ -286,7 +315,7 @@ public sealed class PairingService : IPairingService
                 return new PairingAttemptResult(PairingOutcome.Disabled, null);
             }
 
-            if (_failedAttempts >= Math.Clamp(_options.MaxAttempts, 1, 20))
+            if (_failedAttempts >= Math.Clamp(Options.MaxAttempts, 1, 20))
             {
                 _logger.LogWarning(
                     "Pairing attempt from {Address} refused: attempt limit already reached.",
@@ -306,14 +335,14 @@ public sealed class PairingService : IPairingService
             lock (_sync)
             {
                 _failedAttempts++;
-                exhausted = _failedAttempts >= Math.Clamp(_options.MaxAttempts, 1, 20);
+                exhausted = _failedAttempts >= Math.Clamp(Options.MaxAttempts, 1, 20);
             }
 
             _logger.LogWarning(
                 "Pairing token mismatch from {Address}. Attempt {Attempt} of {Max}.",
                 remoteAddress,
                 FailedAttempts,
-                _options.MaxAttempts);
+                Options.MaxAttempts);
 
             if (exhausted)
             {
@@ -332,9 +361,13 @@ public sealed class PairingService : IPairingService
         }
 
         // --- Gate 4: does a human at the PC approve? ---
-        if (_options.RequireLocalApproval)
+        // Full control can only come out of this prompt. With approval switched off there is no
+        // person to have ticked the box, so the device gets the default permissions.
+        bool fullControl = false;
+
+        if (Options.RequireLocalApproval)
         {
-            PairingOutcome approval = await AskUserAsync(
+            (PairingOutcome approval, bool grantFullControl) = await AskUserAsync(
                 request,
                 peerCertificateFingerprint,
                 remoteAddress,
@@ -345,11 +378,18 @@ public sealed class PairingService : IPairingService
             {
                 return new PairingAttemptResult(approval, null);
             }
+
+            fullControl = grantFullControl;
         }
 
         // All gates passed. Burn the token by closing the window: a token is
         // single-use, so even a second legitimate device must be paired deliberately.
-        PairedDevice device = await SaveAsync(request, peerCertificateFingerprint, remoteAddress, cancellationToken)
+        PairedDevice device = await SaveAsync(
+                request,
+                peerCertificateFingerprint,
+                remoteAddress,
+                fullControl,
+                cancellationToken)
             .ConfigureAwait(false);
         CloseWindow();
 
@@ -366,7 +406,7 @@ public sealed class PairingService : IPairingService
         string remoteAddress,
         CancellationToken cancellationToken)
     {
-        if (!_options.AllowCodePairing)
+        if (!Options.AllowCodePairing)
         {
             _logger.LogWarning(
                 "Code pairing from {Address} refused: it is switched off in the configuration.",
@@ -415,7 +455,7 @@ public sealed class PairingService : IPairingService
         {
             string code = PairingCode.Compute(localCertificateFingerprint, peerCertificateFingerprint);
 
-            PairingOutcome approval = await AskUserAsync(
+            (PairingOutcome approval, bool fullControl) = await AskUserAsync(
                 request,
                 peerCertificateFingerprint,
                 remoteAddress,
@@ -440,7 +480,12 @@ public sealed class PairingService : IPairingService
             }
 
             // A QR window that happens to be open is left alone: its token was not used.
-            PairedDevice device = await SaveAsync(request, peerCertificateFingerprint, remoteAddress, cancellationToken)
+            PairedDevice device = await SaveAsync(
+                    request,
+                    peerCertificateFingerprint,
+                    remoteAddress,
+                    fullControl,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             return new PairingAttemptResult(PairingOutcome.Paired, device);
@@ -473,9 +518,10 @@ public sealed class PairingService : IPairingService
     }
 
     /// <summary>
-    /// Asks the person at the PC. Returns <see cref="PairingOutcome.Paired"/> when they allow it.
+    /// Asks the person at the PC. Returns <see cref="PairingOutcome.Paired"/> when they allow it,
+    /// together with whether they chose to grant the device every permission.
     /// </summary>
-    private async Task<PairingOutcome> AskUserAsync(
+    private async Task<(PairingOutcome Outcome, bool GrantFullControl)> AskUserAsync(
         PairRequestArgs request,
         string peerCertificateFingerprint,
         string remoteAddress,
@@ -490,7 +536,7 @@ public sealed class PairingService : IPairingService
             _logger.LogWarning(
                 "Pairing request from {Address} refused: no interactive UI is available to approve it.",
                 remoteAddress);
-            return PairingOutcome.ApprovalTimeout;
+            return (PairingOutcome.ApprovalTimeout, false);
         }
 
         var approvalRequest = new PairingApprovalRequest(
@@ -502,33 +548,46 @@ public sealed class PairingService : IPairingService
             comparisonCode is null ? null : PairingCode.ToDisplayForm(comparisonCode));
 
         using var approvalTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        approvalTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.ApprovalTimeoutSeconds, 10, 600)));
+        approvalTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(Options.ApprovalTimeoutSeconds, 10, 600)));
 
-        bool approved;
+        PairingApprovalDecision decision;
         try
         {
-            approved = await _approval.RequestApprovalAsync(approvalRequest, approvalTimeout.Token)
+            decision = await _approval.RequestDecisionAsync(approvalRequest, approvalTimeout.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             _logger.LogWarning("Pairing approval from {Address} timed out.", remoteAddress);
-            return PairingOutcome.ApprovalTimeout;
+            return (PairingOutcome.ApprovalTimeout, false);
         }
 
-        if (!approved)
+        if (!decision.Approved)
         {
             _logger.LogWarning("Pairing request from {Address} was refused by the user.", remoteAddress);
-            return PairingOutcome.Rejected;
+            return (PairingOutcome.Rejected, false);
         }
 
-        return PairingOutcome.Paired;
+        return (PairingOutcome.Paired, decision.GrantFullControl);
     }
 
+    /// <summary>
+    /// Stores the pairing record.
+    /// </summary>
+    /// <param name="request">The device's request.</param>
+    /// <param name="peerCertificateFingerprint">The certificate it presented.</param>
+    /// <param name="remoteAddress">Where it connected from, for the audit line.</param>
+    /// <param name="fullControl">
+    /// Whether the person who approved it ticked "full control". The permission set is decided by
+    /// that one local, human choice and by nothing the device sent: a pairing request has no field
+    /// through which a device could ask for more than the default.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the save.</param>
     private async Task<PairedDevice> SaveAsync(
         PairRequestArgs request,
         string peerCertificateFingerprint,
         string remoteAddress,
+        bool fullControl,
         CancellationToken cancellationToken)
     {
         var device = new PairedDevice
@@ -539,19 +598,20 @@ public sealed class PairingService : IPairingService
             Model = SanitizeDisplayName(request.Model),
             CertificateFingerprint = peerCertificateFingerprint,
             PairedAt = _clock.UtcNow,
-            Permissions = PermissionSet.Default,
+            Permissions = fullControl ? PermissionSet.All : PermissionSet.Default,
         };
 
         await _store.SaveAsync(device, cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
             "Device paired. Device={DeviceId} Name={DeviceName} Fingerprint={Fingerprint} " +
-            "Address={Address} Permissions={Permissions}",
+            "Address={Address} Permissions={Permissions} FullControlChosenAtPc={FullControl}",
             device.DeviceId,
             device.DeviceName,
             CertificateFingerprint.ToShortForm(device.CertificateFingerprint),
             remoteAddress,
-            string.Join(",", PermissionSet.ToNames(device.Permissions)));
+            string.Join(",", PermissionSet.ToNames(device.Permissions)),
+            fullControl);
 
         return device;
     }

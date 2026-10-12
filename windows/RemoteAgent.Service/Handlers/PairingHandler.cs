@@ -59,13 +59,24 @@ public sealed class PairRequestHandler : ICommandHandler
                 retryable: true);
         }
 
-        if (session.Device is not null)
+        if (session.Device is { } known)
         {
-            // Already paired on this connection. Harmless, but worth answering clearly rather
-            // than burning the pairing token on a no-op.
-            return CommandResult.Fail(
-                ErrorCodes.InvalidArguments,
-                "This device is already paired with the PC.");
+            // The PC already knows this device: the phone forgot the PC (its app data was cleared,
+            // or "Forget this PC" was tapped) while the record here survived. Answering with the
+            // PC's identity lets the phone store it again. Nothing is granted that the device does
+            // not already hold, so there is no prompt, and the pairing token is left unspent.
+            _logger.LogInformation(
+                "Pairing request from device {DeviceId}, which is already paired; confirming the existing pairing.",
+                known.DeviceId);
+
+            return CommandResult.Success(new PairResult
+            {
+                DeviceId = PairingIdentity.DeviceId,
+                DeviceName = PairingIdentity.DeviceName,
+                CertificateFingerprint = PairingIdentity.Fingerprint,
+                Permissions = PermissionSet.ToNames(known.Permissions),
+                ProtocolVersion = ProtocolVersion.Current,
+            });
         }
 
         PairingAttemptResult result = await _pairing

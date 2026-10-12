@@ -124,6 +124,11 @@ public static class CommandCatalog
         new(CommandNames.BrowserOpenUrl, Permission.LaunchApps, CommandTarget.Session),
         new(CommandNames.BrowserClose, Permission.LaunchApps, CommandTarget.Session),
 
+        // Windows. The same permission as applications: managing a window is managing the app
+        // that owns it, and a device allowed to close an app may close one of its windows.
+        new(CommandNames.WindowList, Permission.LaunchApps, CommandTarget.Session),
+        new(CommandNames.WindowAction, Permission.LaunchApps, CommandTarget.Session),
+
         // Screen and media.
         new(CommandNames.ScreenMonitorList, Permission.ViewScreen, CommandTarget.Session),
         new(CommandNames.ScreenSelectMonitor, Permission.ViewScreen, CommandTarget.Session),
@@ -149,6 +154,12 @@ public static class CommandCatalog
 
         // Files.
         new(CommandNames.FileList, Permission.ManageFiles, CommandTarget.Session),
+        new(CommandNames.FileOpen, Permission.ManageFiles, CommandTarget.Session),
+        new(CommandNames.FileCreate, Permission.ManageFiles, CommandTarget.Session),
+        new(CommandNames.FileRename, Permission.ManageFiles, CommandTarget.Session),
+        new(CommandNames.FileCopy, Permission.ManageFiles, CommandTarget.Session),
+        new(CommandNames.FileMove, Permission.ManageFiles, CommandTarget.Session),
+        new(CommandNames.FileDelete, Permission.ManageFiles, CommandTarget.Session),
         new(CommandNames.FileUpload, Permission.ManageFiles, CommandTarget.Session),
         new(CommandNames.FileDownload, Permission.ManageFiles, CommandTarget.Session),
         new(CommandNames.FileCancel, Permission.ManageFiles, CommandTarget.Session),

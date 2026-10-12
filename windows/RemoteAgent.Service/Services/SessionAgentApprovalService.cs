@@ -38,6 +38,17 @@ public sealed class SessionAgentApprovalService : IPairingApprovalService
     /// <inheritdoc />
     public async Task<bool> RequestApprovalAsync(
         PairingApprovalRequest request,
+        CancellationToken cancellationToken) =>
+        (await RequestDecisionAsync(request, cancellationToken).ConfigureAwait(false)).Approved;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The dialog carries one extra, unticked checkbox: "give this device full control". Its state
+    /// comes back beside the answer and is honoured only together with an explicit Allow — a
+    /// response that says "full control" without "approved" is a refusal like any other.
+    /// </remarks>
+    public async Task<PairingApprovalDecision> RequestDecisionAsync(
+        PairingApprovalRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -48,7 +59,7 @@ public sealed class SessionAgentApprovalService : IPairingApprovalService
             _logger.LogWarning(
                 "Cannot prompt for pairing approval: no session agent is connected. " +
                 "Somebody must be signed in at the PC to approve a new device.");
-            return false;
+            return PairingApprovalDecision.Declined;
         }
 
         var payload = new
@@ -79,16 +90,27 @@ public sealed class SessionAgentApprovalService : IPairingApprovalService
             _logger.LogWarning(
                 "The session agent could not show the pairing prompt: {Code}",
                 response.Error?.Code);
-            return false;
+            return PairingApprovalDecision.Declined;
         }
 
-        bool approved = response.Data?["approved"]?.GetValue<bool>() ?? false;
+        bool approved = ReadFlag(response.Data, "approved");
+        bool fullControl = approved && ReadFlag(response.Data, "fullControl");
 
         _logger.LogInformation(
             "Pairing request from {Address} was {Outcome} at the PC.",
             request.RemoteAddress,
-            approved ? "approved" : "declined");
+            !approved ? "declined" : fullControl ? "approved with full control" : "approved");
 
-        return approved;
+        return new PairingApprovalDecision(approved, fullControl);
     }
+
+    /// <summary>
+    /// Reads a boolean from the agent's answer. Anything other than a literal <c>true</c> is false,
+    /// so a missing field, a wrong type, or an older agent that never sends it all mean "no".
+    /// </summary>
+    private static bool ReadFlag(System.Text.Json.Nodes.JsonNode? data, string name) =>
+        data is System.Text.Json.Nodes.JsonObject values &&
+        values[name] is System.Text.Json.Nodes.JsonValue value &&
+        value.TryGetValue(out bool flag) &&
+        flag;
 }

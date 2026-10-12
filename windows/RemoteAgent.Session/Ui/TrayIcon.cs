@@ -51,9 +51,7 @@ public sealed class TrayIcon : IDisposable
 
         _icon = new NotifyIcon
         {
-            // The stock shield-free application icon: shipping a custom .ico adds a resource to
-            // maintain for no functional gain at this stage.
-            Icon = SystemIcons.Application,
+            Icon = AppIcon.ForTray(),
             Text = "PC-Remote",
             Visible = true,
             ContextMenuStrip = menu,

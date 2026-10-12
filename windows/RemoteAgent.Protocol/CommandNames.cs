@@ -81,6 +81,14 @@ public static class CommandNames
     /// <summary>Closes a browser.</summary>
     public const string BrowserClose = "browser.close";
 
+    // --- Windows (Permission.LaunchApps) ---
+
+    /// <summary>Lists the visible top-level application windows, the set Alt+Tab shows.</summary>
+    public const string WindowList = "window.list";
+
+    /// <summary>Focuses, minimizes, maximizes, restores or politely closes one window.</summary>
+    public const string WindowAction = "window.action";
+
     // --- Screen and media (Permission.ViewScreen) — Phase 3 ---
 
     /// <summary>Enumerates monitors with bounds, DPI and refresh rate.</summary>
@@ -140,8 +148,26 @@ public static class CommandNames
 
     // --- Files (Permission.ManageFiles) — Phase 5 ---
 
-    /// <summary>Lists entries inside one configured allowed root.</summary>
+    /// <summary>Lists the allowed roots, or the entries of one directory inside a root.</summary>
     public const string FileList = "file.list";
+
+    /// <summary>Opens a file with its default application, or a folder in Explorer, on the PC.</summary>
+    public const string FileOpen = "file.open";
+
+    /// <summary>Creates an empty file or a folder. Never overwrites.</summary>
+    public const string FileCreate = "file.create";
+
+    /// <summary>Renames a file or folder in place.</summary>
+    public const string FileRename = "file.rename";
+
+    /// <summary>Copies a file or folder into a directory. Never overwrites.</summary>
+    public const string FileCopy = "file.copy";
+
+    /// <summary>Moves a file or folder into a directory. Never overwrites.</summary>
+    public const string FileMove = "file.move";
+
+    /// <summary>Deletes a file or folder, to the Recycle Bin unless asked otherwise.</summary>
+    public const string FileDelete = "file.delete";
 
     /// <summary>Begins a mobile-to-PC transfer.</summary>
     public const string FileUpload = "file.upload";

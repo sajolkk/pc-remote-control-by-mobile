@@ -139,8 +139,17 @@ public static class CapabilityNames
     /// <summary>More than one monitor is attached.</summary>
     public const string MultiMonitor = "screen.multi_monitor";
 
-    /// <summary>Remote input injection is available.</summary>
+    /// <summary>Remote input injection is available. Superseded by the two specific names below.</summary>
     public const string Input = "input";
+
+    /// <summary>Pointer injection works: moves, buttons, clicks and the wheel.</summary>
+    public const string InputMouse = "input.mouse";
+
+    /// <summary>Keyboard injection works: virtual keys, shortcuts and Unicode text.</summary>
+    public const string InputKeyboard = "input.keyboard";
+
+    /// <summary>Top-level windows can be listed, focused, resized and closed.</summary>
+    public const string Windows = "windows";
 
     /// <summary>Application enumeration and launching are available.</summary>
     public const string Apps = "apps";
@@ -151,7 +160,7 @@ public static class CapabilityNames
     /// <summary>Clipboard read/write is available.</summary>
     public const string Clipboard = "clipboard";
 
-    /// <summary>File transfer is configured with at least one allowed root.</summary>
+    /// <summary>File management is available and configured with at least one allowed root.</summary>
     public const string Files = "files";
 
     /// <summary>Volume control is available (an active audio endpoint exists).</summary>

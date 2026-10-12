@@ -8,6 +8,7 @@ using System.Windows.Media;
 // meaning so the layout code below reads normally.
 using Brushes = System.Windows.Media.Brushes;
 using Button = System.Windows.Controls.Button;
+using CheckBox = System.Windows.Controls.CheckBox;
 using Color = System.Windows.Media.Color;
 using FontFamily = System.Windows.Media.FontFamily;
 using Image = System.Windows.Controls.Image;
@@ -38,6 +39,10 @@ namespace RemoteAgent.Session.Ui;
 /// network is in between, so it must be impossible to miss.</item>
 /// <item><b>Topmost, but not activated-by-stealing-focus.</b> The dialog must be seen, but a
 /// window appearing under the user's cursor mid-click is how accidental approvals happen.</item>
+/// <item><b>Full control is a box the owner has to tick.</b> It starts unticked every time, it
+/// names what it adds, and it does nothing unless Allow is also clicked. A new device gets view and
+/// input only unless the person at the PC deliberately says otherwise — and there is nothing a
+/// device can send that ticks it.</item>
 /// </list>
 ///
 /// <para>Built in code rather than XAML deliberately: it keeps the security-relevant text and the
@@ -47,6 +52,7 @@ namespace RemoteAgent.Session.Ui;
 [SupportedOSPlatform("windows")]
 internal sealed class PairingApprovalDialog : Window
 {
+    private readonly CheckBox _fullControl;
     private bool _approved;
 
     private PairingApprovalDialog(
@@ -58,6 +64,7 @@ internal sealed class PairingApprovalDialog : Window
         string code)
     {
         Title = "PC-Remote: pair a new device?";
+        Icon = AppIcon.ForWindow();
         SizeToContent = SizeToContent.Height;
         Width = 460;
         ResizeMode = ResizeMode.NoResize;
@@ -130,12 +137,29 @@ internal sealed class PairingApprovalDialog : Window
 
         root.Children.Add(new TextBlock
         {
-            Text = "Allowing grants permission to view the screen and control input. " +
-                   "Other permissions stay off until you enable them.",
+            Text = "Allowing grants permission to view the screen and control the mouse and keyboard. " +
+                   "Other permissions stay off unless you tick the box below, and can be changed " +
+                   "later under Devices in the tray menu.",
             TextWrapping = TextWrapping.Wrap,
             Foreground = new SolidColorBrush(Color.FromRgb(0x50, 0x50, 0x50)),
-            Margin = new Thickness(0, 0, 0, 18),
+            Margin = new Thickness(0, 0, 0, 12),
         });
+
+        // Unticked by default, and constructed that way explicitly rather than relying on the
+        // control's default: this box is the difference between "may look and click" and "may
+        // manage files, launch apps and shut the PC down".
+        _fullControl = new CheckBox
+        {
+            IsChecked = false,
+            Margin = new Thickness(0, 0, 0, 18),
+            Content = new TextBlock
+            {
+                Text = "Give this device full control (apps, files, power, clipboard)",
+                TextWrapping = TextWrapping.Wrap,
+            },
+        };
+
+        root.Children.Add(_fullControl);
 
         var buttons = new StackPanel
         {
@@ -223,14 +247,15 @@ internal sealed class PairingApprovalDialog : Window
     }
 
     /// <summary>
-    /// Shows the dialog modally and returns whether the user allowed the pairing.
+    /// Shows the dialog modally and returns what the user decided.
     /// </summary>
     /// <remarks>
-    /// Must be called on the UI thread. Returns false for every outcome other than an explicit
+    /// Must be called on the UI thread. Returns a refusal for every outcome other than an explicit
     /// click on Allow — including the window being closed, dismissed, or killed — because "no
-    /// clear yes" has to mean no.
+    /// clear yes" has to mean no. The full-control box is read only when Allow was clicked, so a
+    /// ticked box on a declined dialog grants nothing.
     /// </remarks>
-    internal static bool Show(
+    internal static PairingDialogResult Show(
         string deviceName,
         string platform,
         string model,
@@ -240,6 +265,18 @@ internal sealed class PairingApprovalDialog : Window
     {
         var dialog = new PairingApprovalDialog(deviceName, platform, model, remoteAddress, fingerprint, code);
         dialog.ShowDialog();
-        return dialog._approved;
+
+        return dialog._approved
+            ? new PairingDialogResult(true, dialog._fullControl.IsChecked == true)
+            : PairingDialogResult.Declined;
     }
+}
+
+/// <summary>What the person at the PC answered to the pairing dialog.</summary>
+/// <param name="Approved">Whether they clicked Allow.</param>
+/// <param name="FullControl">Whether "give this device full control" was ticked when they did.</param>
+internal readonly record struct PairingDialogResult(bool Approved, bool FullControl)
+{
+    /// <summary>Declined, dismissed, or never shown.</summary>
+    internal static PairingDialogResult Declined { get; } = new(false, false);
 }

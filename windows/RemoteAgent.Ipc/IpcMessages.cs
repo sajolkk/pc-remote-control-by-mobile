@@ -59,6 +59,29 @@ public static class IpcCommands
     public const string RemoveDevice = "ipc.remove_device";
 
     /// <summary>
+    /// Agent replaces a device's permission groups (<c>permissions</c>: an array of names), from
+    /// the checkboxes in the Devices window.
+    /// </summary>
+    /// <remarks>
+    /// The same trust argument as opening pairing: the only party able to send this is the session
+    /// agent the service itself spawned for the person signed in at the PC, and that person is the
+    /// owner of every permission being granted.
+    /// </remarks>
+    public const string SetDevicePermissions = "ipc.set_device_permissions";
+
+    /// <summary>
+    /// Agent asks the service which directories file management may touch.
+    /// </summary>
+    /// <remarks>
+    /// The agent serves files but cannot be trusted to know the policy on its own: the
+    /// configuration lives in a directory restricted to SYSTEM and Administrators, which the
+    /// signed-in user's process usually cannot read. Left to itself the agent would fall back to
+    /// the defaults — the whole PC — and an owner's narrowed configuration would be silently
+    /// ignored. So the service, which can read it, is the authority, and answers this.
+    /// </remarks>
+    public const string GetFilePolicy = "ipc.get_file_policy";
+
+    /// <summary>
     /// Service tells the agent a control connection closed or its device's permissions changed.
     /// </summary>
     /// <remarks>
@@ -203,6 +226,45 @@ public sealed class IpcConnectionChangedArgs
     /// <summary>The device's permissions now, by name. Empty when closed.</summary>
     [JsonPropertyName("permissions")]
     public string[] Permissions { get; init; } = [];
+}
+
+/// <summary>
+/// Response to <see cref="IpcCommands.GetFilePolicy"/>: the file-management settings in force.
+/// </summary>
+/// <remarks>
+/// Paths travel unexpanded, exactly as configured. <c>%USERPROFILE%</c> has to be resolved by the
+/// agent, in the signed-in user's environment; resolved by the service it would name the SYSTEM
+/// account's profile.
+/// </remarks>
+public sealed class IpcFilePolicy
+{
+    /// <summary>Whether the built-in roots (personal folders and fixed drives) are offered.</summary>
+    [JsonPropertyName("useDefaultRoots")]
+    public bool UseDefaultRoots { get; init; }
+
+    /// <summary>Configured roots, in addition to or instead of the built-in ones.</summary>
+    [JsonPropertyName("allowedRoots")]
+    public IpcFileRoot[] AllowedRoots { get; init; } = [];
+
+    /// <summary>Largest amount of data one remote copy may write, in megabytes.</summary>
+    [JsonPropertyName("maxFileSizeMb")]
+    public int MaxFileSizeMb { get; init; }
+}
+
+/// <summary>One configured root inside <see cref="IpcFilePolicy"/>.</summary>
+public sealed class IpcFileRoot
+{
+    /// <summary>Display name, or empty for the directory's own name.</summary>
+    [JsonPropertyName("alias")]
+    public string Alias { get; init; } = string.Empty;
+
+    /// <summary>The directory, possibly containing environment variables.</summary>
+    [JsonPropertyName("path")]
+    public string Path { get; init; } = string.Empty;
+
+    /// <summary>Whether entries beneath it may be changed.</summary>
+    [JsonPropertyName("write")]
+    public bool Write { get; init; }
 }
 
 /// <summary>Arguments for <see cref="IpcCommands.Hello"/>.</summary>

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using RemoteAgent.Core.Abstractions;
 using RemoteAgent.Core.Commands;
+using RemoteAgent.Core.Input;
 using RemoteAgent.Ipc;
 using RemoteAgent.Protocol;
 using RemoteAgent.Protocol.Messages;
@@ -26,10 +27,16 @@ namespace RemoteAgent.Session.Hosting;
 /// "the PC is locked" rather than being shown a frozen frame (§12.1).</para>
 ///
 /// <para><b>Capabilities are reported from what is actually implemented</b>, not from what the
-/// protocol declares. This build advertises applications, browser control and screen streaming
-/// (each only when probing shows it works here); input and clipboard are absent until their phases
-/// land, so a client hides those controls instead of offering something that returns "not
-/// supported" (§0).</para>
+/// protocol declares. This build advertises applications, browser control, screen streaming,
+/// mouse and keyboard input, window management and file management (each only when probing shows
+/// it works here); clipboard and volume are absent until their phase lands, so a client hides
+/// those controls instead of offering something that returns "not supported" (§0).</para>
+///
+/// <para><b>Held input is released from here.</b> This class hears about the three events that
+/// must let go of whatever a phone was holding down — its control connection closing, the session
+/// locking, and the service itself going away — and passes each to the input controller. The
+/// phone asking is the fourth, and the least important: the cases that matter are the ones where
+/// it can no longer ask.</para>
 ///
 /// <para><b>Permissions are re-checked here</b> even though the service already authorized the
 /// call. The service is trusted, but a second check costs nothing and means a routing bug in
@@ -52,6 +59,10 @@ public sealed class SessionAgentHostedService : BackgroundService
     private readonly IMonitorProvider _monitors;
     private readonly IScreenCaptureFactory _captureFactory;
     private readonly IVideoEncoderFactory _encoders;
+    private readonly InputController _input;
+    private readonly IInputInjector _injector;
+    private readonly IWindowManager _windows;
+    private readonly ServiceFilePolicy _filePolicy;
 
     private bool _sessionSwitchHooked;
     private TrayIcon? _tray;
@@ -73,8 +84,16 @@ public sealed class SessionAgentHostedService : BackgroundService
         MediaSessionManager media,
         IMonitorProvider monitors,
         IScreenCaptureFactory captureFactory,
-        IVideoEncoderFactory encoders)
+        IVideoEncoderFactory encoders,
+        InputController input,
+        IInputInjector injector,
+        IWindowManager windows,
+        ServiceFilePolicy filePolicy)
     {
+        _input = input ?? throw new ArgumentNullException(nameof(input));
+        _injector = injector ?? throw new ArgumentNullException(nameof(injector));
+        _windows = windows ?? throw new ArgumentNullException(nameof(windows));
+        _filePolicy = filePolicy ?? throw new ArgumentNullException(nameof(filePolicy));
         _media = media ?? throw new ArgumentNullException(nameof(media));
         _monitors = monitors ?? throw new ArgumentNullException(nameof(monitors));
         _captureFactory = captureFactory ?? throw new ArgumentNullException(nameof(captureFactory));
@@ -108,6 +127,10 @@ public sealed class SessionAgentHostedService : BackgroundService
             await CreateTrayAsync(stoppingToken).ConfigureAwait(false);
             _ = ListenForShowRequestsAsync(stoppingToken);
 
+            // Keeps the allowed file roots in step with the service's configuration. It waits for
+            // the channel by itself, so it can start before the connection exists.
+            _ = _filePolicy.RunAsync(stoppingToken);
+
             _logger.LogInformation(
                 "Session agent starting. Commands={CommandCount} Capabilities={Capabilities}",
                 _channel.ImplementedCommands.Count,
@@ -134,6 +157,9 @@ public sealed class SessionAgentHostedService : BackgroundService
         }
         finally
         {
+            // Whatever a phone was holding must not outlive the process that was holding it.
+            _input.ReleaseEverything("the session agent is stopping");
+
             _media.Telemetry -= OnMediaTelemetry;
             _channel.Disconnected -= OnServiceDisconnected;
             UnhookSessionSwitch();
@@ -385,6 +411,13 @@ public sealed class SessionAgentHostedService : BackgroundService
                 (deviceId, blocked) => SendDeviceCommandAsync(
                     IpcCommands.SetDeviceBlocked,
                     new JsonObject { ["deviceId"] = deviceId, ["blocked"] = blocked }),
+                (deviceId, permissions) => SendDeviceCommandAsync(
+                    IpcCommands.SetDevicePermissions,
+                    new JsonObject
+                    {
+                        ["deviceId"] = deviceId,
+                        ["permissions"] = new JsonArray([.. permissions.Select(name => JsonValue.Create(name))]),
+                    }),
                 deviceId => SendDeviceCommandAsync(
                     IpcCommands.RemoveDevice,
                     new JsonObject { ["deviceId"] = deviceId })));
@@ -426,10 +459,34 @@ public sealed class SessionAgentHostedService : BackgroundService
                 node["connected"]?.GetValue<bool>() ?? false,
                 node["blocked"]?.GetValue<bool>() ?? false,
                 node["address"]?.GetValue<string>(),
-                DateTimeOffset.TryParse(node["lastSeenAt"]?.GetValue<string>(), out DateTimeOffset seen) ? seen : null));
+                DateTimeOffset.TryParse(node["lastSeenAt"]?.GetValue<string>(), out DateTimeOffset seen) ? seen : null,
+                ReadPermissions(node["permissions"])));
         }
 
         return (rows, null);
+    }
+
+    /// <summary>
+    /// Reads a device's permission names. An older service that does not report them yields null,
+    /// which the window shows as "unknown" rather than as "none".
+    /// </summary>
+    private static IReadOnlyList<string>? ReadPermissions(JsonNode? node)
+    {
+        if (node is not JsonArray array)
+        {
+            return null;
+        }
+
+        var names = new List<string>(array.Count);
+        foreach (JsonNode? entry in array)
+        {
+            if (entry is JsonValue value && value.TryGetValue(out string? name) && !string.IsNullOrEmpty(name))
+            {
+                names.Add(name);
+            }
+        }
+
+        return names;
     }
 
     private async Task<string?> SendDeviceCommandAsync(string command, JsonObject args)
@@ -515,8 +572,9 @@ public sealed class SessionAgentHostedService : BackgroundService
                 return await HandleConnectionChangedAsync(request).ConfigureAwait(false);
 
             case IpcCommands.ReleaseInput:
-                // Nothing to release until input injection lands in Phase 4. Answered as a success
-                // because the postcondition — no keys held — is satisfied.
+                // The service's blanket "let go of everything". Always a success: afterwards no
+                // connection is holding anything, which is all the caller asked for.
+                _input.ReleaseEverything("the service asked");
                 return IpcResponse.Success(request.Id);
 
             case IpcCommands.Shutdown:
@@ -572,15 +630,21 @@ public sealed class SessionAgentHostedService : BackgroundService
             "Showing a pairing approval prompt for a device at {Address}.",
             address);
 
-        // The fallback is false: if the dialog cannot be shown for any reason, the answer is no.
-        bool approved = await _ui.InvokeAsync(
+        // The fallback is a refusal: if the dialog cannot be shown for any reason, the answer is no.
+        PairingDialogResult answer = await _ui.InvokeAsync(
             () => PairingApprovalDialog.Show(deviceName, platform, model, address, fingerprint, code),
-            fallback: false,
+            fallback: PairingDialogResult.Declined,
             cancellationToken).ConfigureAwait(false);
 
+        // "fullControl" is the state of the dialog's one checkbox. It is sent only alongside an
+        // approval, and the service ignores it without one.
         return IpcResponse.Success(
             request.Id,
-            JsonSerializer.SerializeToNode(new { approved }));
+            JsonSerializer.SerializeToNode(new
+            {
+                approved = answer.Approved,
+                fullControl = answer.Approved && answer.FullControl,
+            }));
     }
 
     private static string ReadString(JsonElement element, string property) =>
@@ -635,9 +699,59 @@ public sealed class SessionAgentHostedService : BackgroundService
         }
 
         capabilities.AddRange(ProbeScreenCapabilities());
+        capabilities.AddRange(ProbeControlCapabilities());
 
-        // Input, clipboard, files and volume are declared in the protocol but not implemented in
-        // this build, so they are deliberately not advertised.
+        // Clipboard and volume are declared in the protocol but not implemented in this build, so
+        // they are deliberately not advertised.
+        return capabilities;
+    }
+
+    /// <summary>
+    /// Reports input, window management and file management, each only if it works here.
+    /// </summary>
+    /// <remarks>
+    /// The probes are read-only: nothing is injected, moved or opened to find out. Input is
+    /// advertised when the desktop reports a non-empty virtual screen to inject into — the same
+    /// query every absolute move depends on. A locked desktop still counts, for the reason a locked
+    /// desktop still counts for capture: the capability describes the PC, and the locked state
+    /// reaches the phone separately. File management is advertised because it is implemented; the
+    /// service removes it again if configuration leaves it no roots.
+    /// </remarks>
+    private IEnumerable<string> ProbeControlCapabilities()
+    {
+        var capabilities = new List<string>();
+
+        try
+        {
+            PixelRect screen = _injector.GetVirtualScreen();
+            if (screen.Width > 0 && screen.Height > 0)
+            {
+                capabilities.Add(CapabilityNames.InputMouse);
+                capabilities.Add(CapabilityNames.InputKeyboard);
+            }
+            else
+            {
+                _logger.LogWarning("Windows reports no desktop to inject input into; remote input is not advertised.");
+            }
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            _logger.LogWarning(ex, "Input injection is unavailable; remote input is not advertised.");
+        }
+
+        try
+        {
+            // Enumerating succeeds with an empty list on a desktop with nothing open, which is
+            // still a desktop whose windows can be managed.
+            _ = _windows.List();
+            capabilities.Add(CapabilityNames.Windows);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Windows could not be enumerated; window management is not advertised.");
+        }
+
+        capabilities.Add(CapabilityNames.Files);
         return capabilities;
     }
 
@@ -715,8 +829,12 @@ public sealed class SessionAgentHostedService : BackgroundService
     /// The service went away, taking every control connection with it. Streams authorized by those
     /// connections end now rather than running on without anyone able to stop them.
     /// </summary>
-    private void OnServiceDisconnected(object? sender, EventArgs e) =>
+    private void OnServiceDisconnected(object? sender, EventArgs e)
+    {
+        // Input first: it is synchronous and it is the one that leaves the desktop unusable.
+        _input.ReleaseEverything("the PC-Remote service connection was lost");
         _ = _media.EndAllAsync("the PC-Remote service connection was lost");
+    }
 
     private void OnMediaTelemetry(string connectionId, MediaQualityEvent report)
     {
@@ -728,8 +846,15 @@ public sealed class SessionAgentHostedService : BackgroundService
     }
 
     /// <summary>
-    /// Ends a connection's stream when the connection closes or it loses <c>ViewScreen</c>.
+    /// Ends a connection's stream when the connection closes or it loses <c>ViewScreen</c>, and
+    /// releases its held keys and buttons when it closes or loses <c>ControlInput</c>.
     /// </summary>
+    /// <remarks>
+    /// This is the dead-man release for the case that needs it most: a phone that vanished
+    /// mid-drag. The service notices the dead connection (by error or by keepalive timeout) and
+    /// sends this, and it arrives on the same ordered pipe as the commands themselves, so it
+    /// cannot overtake the button-down it is cleaning up after.
+    /// </remarks>
     private async Task<IpcResponse> HandleConnectionChangedAsync(IpcRequest request)
     {
         IpcConnectionChangedArgs? change = null;
@@ -743,8 +868,16 @@ public sealed class SessionAgentHostedService : BackgroundService
             return IpcResponse.Failure(request.Id, ErrorCodes.InvalidArguments, "Missing connection id.");
         }
 
-        bool mayView = !change.Closed &&
-                       PermissionSet.Allows(PermissionSet.FromNames(change.Permissions), Permission.ViewScreen);
+        Permission granted = PermissionSet.FromNames(change.Permissions);
+
+        if (change.Closed || !PermissionSet.Allows(granted, Permission.ControlInput))
+        {
+            _input.ReleaseConnection(
+                change.ConnectionId,
+                change.Closed ? "the control connection closed" : "input control was revoked at the PC");
+        }
+
+        bool mayView = !change.Closed && PermissionSet.Allows(granted, Permission.ViewScreen);
 
         if (!mayView)
         {
@@ -826,6 +959,9 @@ public sealed class SessionAgentHostedService : BackgroundService
 
         _logger.LogInformation("Display configuration changed; {Count} monitor(s).", count);
 
+        // A point on "the second monitor" now means somewhere else. Drop the cached layout.
+        _input.InvalidateMonitors();
+
         _ = _channel.SendEventAsync(
             EventNames.MonitorsChanged,
             JsonSerializer.SerializeToNode(new { count }),
@@ -834,6 +970,25 @@ public sealed class SessionAgentHostedService : BackgroundService
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     {
+        // Leaving the desktop by any route releases held input before anything else is done about
+        // it. A lock additionally refuses further input until the matching unlock.
+        switch (e.Reason)
+        {
+            case SessionSwitchReason.SessionLock:
+                _input.OnSessionLocked();
+                break;
+
+            case SessionSwitchReason.SessionUnlock:
+                _input.OnSessionUnlocked();
+                break;
+
+            case SessionSwitchReason.ConsoleDisconnect:
+            case SessionSwitchReason.RemoteDisconnect:
+            case SessionSwitchReason.SessionLogoff:
+                _input.ReleaseEverything("the session left the console");
+                break;
+        }
+
         bool? locked = e.Reason switch
         {
             SessionSwitchReason.SessionLock => true,

@@ -95,6 +95,28 @@ public sealed class NetworkOptions
     /// </summary>
     public string[] SubnetAllowlist { get; set; } = [];
 
+    /// <summary>
+    /// Address ranges (CIDR) of VPN overlay networks this PC may be reached through, for remote
+    /// access from outside the LAN. Defaults to <c>100.64.0.0/10</c>, the carrier-grade NAT range
+    /// that Tailscale assigns its addresses from.
+    /// </summary>
+    /// <remarks>
+    /// <para>PC-Remote has no relay server. Reaching the PC from elsewhere means joining it and the
+    /// phone to the same VPN (Tailscale, WireGuard, ZeroTier), after which the phone connects to
+    /// the PC's VPN address exactly as it would to a LAN address.</para>
+    ///
+    /// <para>The only thing that stands in the way is the firewall. The installer's rules apply to
+    /// the Private network profile, and Windows frequently classifies a VPN adapter as Public, so
+    /// the rules never match traffic arriving through it. For each range listed here the installer
+    /// adds a second set of rules that apply on every profile but only to peers inside that range.
+    /// Add your own overlay's subnet (a WireGuard <c>10.x</c> network, a ZeroTier range) and re-run
+    /// the installer; set it to an empty array to add no such rules at all.</para>
+    ///
+    /// <para>This widens the firewall, not authentication: a peer inside a listed range still needs
+    /// a paired certificate to get past the TLS handshake.</para>
+    /// </remarks>
+    public string[] RemoteAccessSubnets { get; set; } = ["100.64.0.0/10"];
+
     /// <summary>Lowest UDP port used for WebRTC media.</summary>
     [Range(1024, 65535)]
     public int MediaPortRangeStart { get; set; } = 47810;
@@ -191,7 +213,11 @@ public sealed class SecurityOptions
     [Range(5, 300)]
     public int MaxClockSkewSeconds { get; set; } = 30;
 
-    /// <summary>Requests per minute allowed per connection before throttling.</summary>
+    /// <summary>
+    /// Requests per minute allowed per connection before throttling. The default, 100 a second,
+    /// is deliberately well above the roughly 60 pointer moves a second that remote input sends
+    /// during a drag; lowering it below about 4500 will make dragging stutter.
+    /// </summary>
     [Range(10, 100000)]
     public int MaxRequestsPerMinute { get; set; } = 6000;
 
@@ -262,12 +288,11 @@ public sealed class StreamingOptions
     public int ScreenshotMaxWidth { get; set; } = 1920;
 }
 
-/// <summary>One directory exposed to file transfer.</summary>
+/// <summary>One directory exposed to file management.</summary>
 public sealed class AllowedRoot
 {
     /// <summary>
-    /// Name shown to the client. The client only ever sees aliases and relative
-    /// paths, never absolute ones, so the PC's directory layout is not disclosed.
+    /// Name shown to the client in the roots view. Empty means the directory's own name.
     /// </summary>
     public string Alias { get; set; } = string.Empty;
 
@@ -282,21 +307,69 @@ public sealed class AllowedRoot
     public bool Write { get; set; }
 }
 
-/// <summary>Allowed file-transfer roots and limits (§7.3).</summary>
+/// <summary>Allowed file-management roots and limits (§7.3).</summary>
+/// <remarks>
+/// Only a device granted <c>ManageFiles</c> reaches any of this, and that permission is off until
+/// the owner turns it on for a device. What these settings decide is how much of the PC such a
+/// device may then see and change.
+/// </remarks>
 public sealed class FileOptions
 {
     /// <summary>
-    /// Directories exposed to file transfer. Empty means file transfer is entirely
-    /// unavailable, which is the safe default for a feature nobody has configured.
+    /// Whether the built-in roots are offered: the signed-in user's Desktop, Documents, Downloads,
+    /// Pictures, Videos and Music folders, and every fixed drive, all writable. On by default, so
+    /// a device the owner has trusted with files can browse the whole PC the way a remote-desktop
+    /// tool would.
     /// </summary>
-    public AllowedRoot[] AllowedRoots { get; set; } =
-    [
-        new() { Alias = "Downloads", Path = "%USERPROFILE%\\Downloads", Write = true },
-        new() { Alias = "Documents", Path = "%USERPROFILE%\\Documents", Write = false },
-        new() { Alias = "Desktop", Path = "%USERPROFILE%\\Desktop", Write = false },
-    ];
+    /// <remarks>
+    /// To narrow file management, set this to false and list exactly the directories to expose in
+    /// <see cref="AllowedRoots"/>. It is a separate switch, rather than "an empty list means the
+    /// defaults", so that an empty list can still mean what it says: nothing is shared.
+    /// </remarks>
+    public bool UseDefaultRoots { get; set; } = true;
 
-    /// <summary>Largest single file accepted or served, in megabytes.</summary>
+    /// <summary>
+    /// Directories exposed in addition to the built-in roots, or instead of them when
+    /// <see cref="UseDefaultRoots"/> is false. An entry for a directory that is also a built-in
+    /// root replaces it, which is how a default root is made read-only. With the built-in roots
+    /// off and this list empty, file management is entirely unavailable.
+    /// </summary>
+    public AllowedRoot[] AllowedRoots { get; set; } = [];
+
+    /// <summary>
+    /// Whether <see cref="AllowedRoots"/> is exactly the list earlier versions wrote into
+    /// <c>config.json</c> on first run: Downloads writable, Documents and Desktop read-only.
+    /// </summary>
+    /// <remarks>
+    /// That list was never the owner's choice — it was this class's old default, serialised into
+    /// the file along with everything else. Left in place it would now be read as a deliberate
+    /// instruction to make Documents and Desktop read-only. The configuration store uses this to
+    /// recognise it and drop it once, on upgrade; a list the owner has edited in any way no longer
+    /// matches and is kept.
+    /// </remarks>
+    public bool HasLegacyGeneratedRoots()
+    {
+        AllowedRoot[] roots = AllowedRoots ?? [];
+        if (roots.Length != 3)
+        {
+            return false;
+        }
+
+        return Matches(roots[0], "Downloads", write: true) &&
+               Matches(roots[1], "Documents", write: false) &&
+               Matches(roots[2], "Desktop", write: false);
+
+        static bool Matches(AllowedRoot? root, string name, bool write) =>
+            root is not null &&
+            root.Write == write &&
+            string.Equals(root.Alias, name, StringComparison.Ordinal) &&
+            string.Equals(root.Path, "%USERPROFILE%\\" + name, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Largest single file accepted or served, in megabytes. Also the most data one remote copy
+    /// may write.
+    /// </summary>
     [Range(1, 1024 * 64)]
     public int MaxFileSizeMb { get; set; } = 2048;
 

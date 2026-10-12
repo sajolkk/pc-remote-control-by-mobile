@@ -261,6 +261,19 @@ internal sealed class ScriptedApprovalService : IPairingApprovalService
     /// <summary>The request the caller was shown, for asserting on what the user would see.</summary>
     public PairingApprovalRequest? LastRequest { get; private set; }
 
+    /// <summary>
+    /// Whether the simulated human ticked "give this device full control". Reported even alongside
+    /// a refusal, the way a dialog with a ticked box and a click on Decline would be, so tests can
+    /// check that a tick without an approval grants nothing.
+    /// </summary>
+    public bool TickFullControl { get; set; }
+
+    /// <inheritdoc />
+    public async Task<PairingApprovalDecision> RequestDecisionAsync(
+        PairingApprovalRequest request,
+        CancellationToken cancellationToken) =>
+        new(await RequestApprovalAsync(request, cancellationToken), TickFullControl);
+
     /// <inheritdoc />
     public async Task<bool> RequestApprovalAsync(
         PairingApprovalRequest request,

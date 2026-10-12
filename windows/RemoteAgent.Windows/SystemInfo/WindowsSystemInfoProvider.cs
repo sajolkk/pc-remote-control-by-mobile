@@ -108,9 +108,16 @@ public sealed class WindowsSystemInfoProvider : ISystemInfoProvider
         {
             foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
             {
+                // Tunnel interfaces are NOT skipped. A VPN is how this PC is reached from outside the
+                // LAN, and its address has to be among those offered in the QR code and in
+                // device.info, or a phone on the VPN is told only addresses it cannot route to.
+                // Depending on the product a VPN adapter reports itself as Ethernet (ZeroTier, TAP
+                // drivers), as a proprietary virtual type (Tailscale, WireGuard), as PPP, or as
+                // Tunnel (Windows' own IKEv2 client) — so no interface type can be excluded on
+                // suspicion. The tunnel pseudo-interfaces that are useless to a phone (Teredo,
+                // ISATAP, 6to4) carry no IPv4 address and fall out at the address filter below.
                 if (nic.OperationalStatus != OperationalStatus.Up ||
-                    nic.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
-                    nic.NetworkInterfaceType == NetworkInterfaceType.Tunnel)
+                    nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
                 {
                     continue;
                 }

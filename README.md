@@ -3,12 +3,11 @@
 Securely monitor and control a Windows PC from a mobile app, over your own LAN. No cloud service, no
 port forwarding, no account.
 
-> **Status: Phase 3 implemented.** Discovery, pairing, authentication, status, power control,
-> application launching, browser control and live screen streaming all work on the PC side. The
-> stream has been verified end to end against libwebrtc (the engine inside the mobile app's WebRTC
-> library) but **not yet on a physical phone**. Remote input is Phase 4 and is not implemented — see
-> the [Phase 2](shared/docs/02-implementation-notes.md) and
-> [Phase 3](shared/docs/03-phase3-streaming-notes.md) notes for exactly what does and does not exist.
+> **Status: Phase 4 implemented.** Discovery, pairing, authentication, status, power control,
+> application and window management, browser control, live screen streaming, remote mouse and
+> keyboard, and file management all work. Pairing, streaming and control have been run from an
+> Android emulator against a real PC, and pairing and streaming on a physical phone. File transfer
+> (upload/download) and clipboard sync are not implemented.
 
 ## What it does today
 
@@ -22,6 +21,12 @@ From your phone, on the same Wi-Fi:
 - open a browser, or open a specific URL
 - watch the PC's screen live — pinch to zoom, switch monitors, pick a quality, take a screenshot —
   with hardware H.264 encoding where the GPU has it and a software fallback where it does not
+- control the PC from the Screen tab: tap to click, double-tap, long-press for right click, drag,
+  two-finger scroll, a trackpad mode, and a keyboard with modifier keys and common shortcuts
+- list open windows and switch to, minimize, maximize, restore or close them
+- browse the PC's folders and drives, and open, create, rename, copy, move and delete files
+- reach the PC from outside your LAN through your own VPN (Tailscale, WireGuard, ZeroTier) by
+  giving the paired PC a remote address
 - see exactly which permissions the PC has granted this device
 
 ## What it deliberately will not do
@@ -47,11 +52,13 @@ unlocking needs you at the keyboard. The reasoning is in
   including to somebody who photographed your QR code.
 - **Least privilege by construction.** The privileged service does power control and networking; a
   separate non-elevated agent touches the desktop; nothing runs elevated that does not have to.
-- **No arbitrary execution, structurally.** Commands come from a fixed allowlist, and applications are
-  launched by an id the PC itself generated — there is no field in the protocol through which a path
-  or a command line could arrive.
+- **A fixed command allowlist.** Applications are launched by an id the PC itself generated, and
+  file commands are confined to the allowed folders and drives. A device that may control the mouse
+  and keyboard, or open files, can do what the signed-in user can, which is why those are
+  permissions.
 - **Permissions are granted on the PC, not requested by the phone.** A device starts with view and
-  control only; everything else is opt-in, and revoking drops a live connection immediately.
+  control only; apps, files, power and clipboard are opt-in: tick "full control" when approving the
+  pairing, or tick them per device under Devices in the tray menu. Changes apply immediately.
 - **The video stream is bound to the authenticated connection.** It is negotiated over the pinned
   control channel, encrypted with DTLS-SRTP, sent only to the address that authenticated, uses no
   STUN or TURN server, and stops the moment that connection closes or loses permission to view.
@@ -69,7 +76,7 @@ unlocking needs you at the keyboard. The reasoning is in
   RemoteAgent.Diagnostics       structured logging with redaction shared by all hosts
   RemoteAgent.Service           the privileged host: LocalSystem, Session 0
   RemoteAgent.Session           the user-session host: desktop, tray icon, dialogs
-  tests/                        173 tests, including real-TLS and loopback-WebRTC suites
+  tests/                        642 tests, including real-TLS and loopback-WebRTC suites
 
 /mobile/remote_control_app      Flutter 3.44 / Dart 3.12, Android and iOS
 

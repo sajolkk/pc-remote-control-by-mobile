@@ -215,8 +215,24 @@ public sealed class MediaSession : IAsyncDisposable
             RTCSessionDescriptionInit answer = session._pc.createAnswer(null);
             await session._pc.setLocalDescription(answer).ConfigureAwait(false);
 
+            // Offer the phone a host candidate on the interface it actually reaches this PC
+            // through. On a LAN that candidate is already there and nothing changes; over a VPN
+            // the stack gathered only the LAN address, which the phone has no route to.
+            string answerSdp = answer.sdp;
+            if (IceCandidatePolicy.ResolveLocalAddressFor(peer) is { } routeAddress)
+            {
+                answerSdp = IceCandidatePolicy.EnsureHostCandidate(answerSdp, routeAddress, out bool added);
+                if (added)
+                {
+                    logger.LogInformation(
+                        "Added a media host candidate on {Local}, the interface that reaches {Peer}.",
+                        routeAddress,
+                        peer);
+                }
+            }
+
             session.Start();
-            return (session, answer.sdp);
+            return (session, answerSdp);
         }
         catch
         {

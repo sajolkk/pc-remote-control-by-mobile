@@ -7,6 +7,7 @@ using System.Windows.Threading;
 
 // UseWindowsForms is enabled in this project for the tray icon; pin the ambiguous names to WPF.
 using Button = System.Windows.Controls.Button;
+using CheckBox = System.Windows.Controls.CheckBox;
 using Color = System.Windows.Media.Color;
 using HorizontalAlignment = System.Windows.HorizontalAlignment;
 using MessageBox = System.Windows.MessageBox;
@@ -22,12 +23,14 @@ internal sealed record DeviceRow(
     bool Connected,
     bool Blocked,
     string? Address,
-    DateTimeOffset? LastSeenAt);
+    DateTimeOffset? LastSeenAt,
+    IReadOnlyList<string>? Permissions = null);
 
 /// <summary>What the window needs from the host. Each call returns an error message, or null.</summary>
 internal sealed record DevicesWindowActions(
     Func<Task<(IReadOnlyList<DeviceRow>? Devices, string? Error)>> Load,
     Func<string, bool, Task<string?>> SetBlocked,
+    Func<string, IReadOnlyList<string>, Task<string?>> SetPermissions,
     Func<string, Task<string?>> Remove);
 
 /// <summary>
@@ -40,6 +43,13 @@ internal sealed record DevicesWindowActions(
 /// it reconnects within its retry interval without anyone touching it. Remove deletes the pairing,
 /// after which the phone must pair again.</para>
 ///
+/// <para><b>Permissions.</b> Each device shows one checkbox per permission group — every group the
+/// protocol defines, taken from <c>PermissionSet.AllNames</c> rather than listed here, so a group
+/// added later cannot be forgotten in this window. Ticking or clearing one applies immediately: the
+/// service stores it, and a connected phone is held to it from its next command. This is where a
+/// device paired with the defaults is later given files or power, and where "full control" is
+/// taken back.</para>
+///
 /// <para>The list refreshes every few seconds while the window is open, so a phone connecting or
 /// dropping shows up without a manual refresh.</para>
 /// </remarks>
@@ -47,6 +57,23 @@ internal sealed record DevicesWindowActions(
 internal sealed class DevicesWindow : Window
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// What each permission group means to the owner, in the order the checkboxes appear.
+    /// </summary>
+    /// <remarks>
+    /// Labels only. Which groups exist is decided by <c>PermissionSet.AllNames</c>; a group with no
+    /// entry here is still shown, under its own name.
+    /// </remarks>
+    private static readonly Dictionary<string, string> PermissionLabels = new(StringComparer.Ordinal)
+    {
+        ["ViewScreen"] = "View screen",
+        ["ControlInput"] = "Mouse and keyboard",
+        ["LaunchApps"] = "Apps and windows",
+        ["ManageFiles"] = "Files",
+        ["PowerControls"] = "Power (lock, sleep, shut down)",
+        ["Clipboard"] = "Clipboard",
+    };
 
     private static readonly SolidColorBrush Muted = new(Color.FromRgb(0x60, 0x60, 0x60));
     private static readonly SolidColorBrush Green = new(Color.FromRgb(0x1E, 0x8E, 0x3E));
@@ -60,15 +87,17 @@ internal sealed class DevicesWindow : Window
     private readonly DispatcherTimer _refresh;
 
     private bool _busy;
+    private bool _reloadRequested;
 
     private DevicesWindow(DevicesWindowActions actions)
     {
         _actions = actions;
 
         Title = "PC-Remote: devices";
-        Width = 520;
-        Height = 460;
-        MinWidth = 420;
+        Icon = AppIcon.ForWindow();
+        Width = 560;
+        Height = 560;
+        MinWidth = 460;
         MinHeight = 300;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(Color.FromRgb(0xFA, 0xFA, 0xFA));
@@ -84,8 +113,8 @@ internal sealed class DevicesWindow : Window
         });
         header.Children.Add(new TextBlock
         {
-            Text = "Disconnect keeps a phone paired but stops it connecting until you allow it again. " +
-                   "Remove deletes the pairing.",
+            Text = "Tick what each phone may do; changes apply straight away. Disconnect keeps a phone " +
+                   "paired but stops it connecting until you allow it again. Remove deletes the pairing.",
             TextWrapping = TextWrapping.Wrap,
             Foreground = Muted,
             Margin = new Thickness(0, 4, 0, 0),
@@ -141,10 +170,15 @@ internal sealed class DevicesWindow : Window
 
     private async Task ReloadAsync()
     {
-        if (_busy)
+        // The periodic refresh rebuilds every card. Doing that while the pointer is over the
+        // window would swap a checkbox out from under a click, so it waits until the pointer has
+        // left; an action the user takes refreshes explicitly and does not come through here idle.
+        if (_busy || (_refresh.IsEnabled && _list.IsMouseOver && _list.Children.Count > 0 && !_reloadRequested))
         {
             return;
         }
+
+        _reloadRequested = false;
 
         _busy = true;
         try
@@ -242,6 +276,10 @@ internal sealed class DevicesWindow : Window
         row.Children.Add(buttons);
         row.Children.Add(info);
 
+        var card = new StackPanel();
+        card.Children.Add(row);
+        card.Children.Add(PermissionPanel(device));
+
         return new Border
         {
             Background = System.Windows.Media.Brushes.White,
@@ -250,8 +288,69 @@ internal sealed class DevicesWindow : Window
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(12, 10, 12, 10),
             Margin = new Thickness(0, 0, 0, 8),
-            Child = row,
+            Child = card,
         };
+    }
+
+    /// <summary>
+    /// One checkbox per permission group, reflecting and editing what the device is granted.
+    /// </summary>
+    private FrameworkElement PermissionPanel(DeviceRow device)
+    {
+        if (device.Permissions is not { } granted)
+        {
+            // An older service that does not report permissions. Showing six empty boxes would
+            // read as "this device may do nothing", and clicking one would overwrite the rest.
+            return new TextBlock
+            {
+                Text = "Permissions cannot be shown: the PC-Remote service is an older version.",
+                Foreground = Muted,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 8, 0, 0),
+            };
+        }
+
+        var panel = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var boxes = new List<(string Name, CheckBox Box)>();
+
+        foreach (string name in RemoteAgent.Protocol.PermissionSet.AllNames)
+        {
+            var box = new CheckBox
+            {
+                Content = PermissionLabels.TryGetValue(name, out string? label) ? label : name,
+                IsChecked = granted.Contains(name, StringComparer.OrdinalIgnoreCase),
+                Margin = new Thickness(0, 2, 16, 2),
+                MinWidth = 150,
+            };
+
+            boxes.Add((name, box));
+            panel.Children.Add(box);
+        }
+
+        foreach ((_, CheckBox box) in boxes)
+        {
+            // Click, not Checked/Unchecked: those also fire when the box is given its initial
+            // state above, and a card being built must not send anything.
+            box.Click += async (_, _) =>
+            {
+                foreach ((_, CheckBox other) in boxes)
+                {
+                    other.IsEnabled = false;
+                }
+
+                // The whole set is sent, read from the boxes as they now stand, so the stored
+                // permissions always equal what this card shows.
+                string[] selected = [.. boxes.Where(static b => b.Box.IsChecked == true).Select(static b => b.Name)];
+
+                string? error = await _actions.SetPermissions(device.DeviceId, selected);
+                _message.Text = error ?? string.Empty;
+
+                _reloadRequested = true;
+                await ReloadAsync();
+            };
+        }
+
+        return panel;
     }
 
     private Task<string?> ConfirmRemove(DeviceRow device)
@@ -286,6 +385,7 @@ internal sealed class DevicesWindow : Window
             button.IsEnabled = false;
             string? error = await action();
             _message.Text = error ?? string.Empty;
+            _reloadRequested = true;
             await ReloadAsync();
         };
 

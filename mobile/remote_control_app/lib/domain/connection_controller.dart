@@ -56,6 +56,7 @@ class ConnectionStatus {
     this.tlsDescription,
     this.latencyMs,
     this.requiresRepair = false,
+    this.viaRemoteAddress = false,
   });
 
   final ConnectionPhase phase;
@@ -78,6 +79,10 @@ class ConnectionStatus {
   /// Set when the PC refused because the pairing is gone, so the UI can offer to re-pair
   /// rather than retrying forever.
   final bool requiresRepair;
+
+  /// Whether the live connection was made through the PC's remote address rather than found
+  /// on the local network.
+  final bool viaRemoteAddress;
 
   bool get isConnected => phase == ConnectionPhase.ready || phase == ConnectionPhase.degraded;
 
@@ -103,6 +108,7 @@ class ConnectionStatus {
     String? tlsDescription,
     int? latencyMs,
     bool? requiresRepair,
+    bool? viaRemoteAddress,
     bool clearMessage = false,
   }) =>
       ConnectionStatus(
@@ -117,6 +123,7 @@ class ConnectionStatus {
         tlsDescription: tlsDescription ?? this.tlsDescription,
         latencyMs: latencyMs ?? this.latencyMs,
         requiresRepair: requiresRepair ?? this.requiresRepair,
+        viaRemoteAddress: viaRemoteAddress ?? this.viaRemoteAddress,
       );
 }
 
@@ -134,21 +141,44 @@ class ConnectionStatus {
 /// The last known address is tried first, because it usually still works and is instant. If
 /// it does not answer, a broadcast scan finds the PC by device id — so a DHCP lease change
 /// or moving between networks costs a couple of seconds rather than a re-pair.
+///
+/// A broadcast cannot cross a VPN, so a PC reached over one (Tailscale and the like) is never
+/// found that way. For that the user can give the PC a remote address, which is tried last:
+/// last address, then the scan, then the remote address. Every one of those connections is held
+/// to the same pinned certificate — an address is only ever a place to look, never a reason to
+/// trust what answers there.
 class ConnectionController extends ChangeNotifier {
   ConnectionController({
     required DeviceIdentityStore identityStore,
     required PairedPcStore pairedStore,
     DiscoveryService? discovery,
+    ControlClient Function(DeviceIdentity identity)? clientFactory,
   })  : _identityStore = identityStore,
         _pairedStore = pairedStore,
-        _discovery = discovery ?? DiscoveryService();
+        _discovery = discovery ?? DiscoveryService(),
+        _clientFactory = clientFactory ?? _newClient;
 
+  static ControlClient _newClient(DeviceIdentity identity) => ControlClient(identity: identity);
 
   static const _maxBackoff = Duration(seconds: 30);
+
+  // How long each step of finding the PC may take. The local steps are cut short when a remote
+  // address is waiting behind them: away from home they are certain to fail, and the user is
+  // watching a spinner until they have.
+  static const _directTimeout = Duration(seconds: 3);
+  static const _scanTime = Duration(seconds: 4);
+  static const _scanTimeBeforeRemote = Duration(milliseconds: 2500);
+  static const _foundTimeout = Duration(seconds: 8);
+  static const _foundTimeoutBeforeRemote = Duration(seconds: 4);
+  static const _remoteTimeout = Duration(seconds: 8);
 
   final DeviceIdentityStore _identityStore;
   final PairedPcStore _pairedStore;
   final DiscoveryService _discovery;
+
+  /// Builds the client for one connection attempt. Replaceable so the order addresses are
+  /// tried in can be tested without a network.
+  final ControlClient Function(DeviceIdentity identity) _clientFactory;
 
   ControlClient? _client;
   StreamSubscription<EventEnvelope>? _eventSubscription;
@@ -158,6 +188,10 @@ class ConnectionController extends ChangeNotifier {
   Duration _backoff = const Duration(seconds: 1);
   bool _wantConnection = false;
   bool _disposed = false;
+
+  /// Identifies the newest attempt. An older one that is still waiting on the network when a
+  /// newer one starts, or when the user disconnects, must not go on to install its connection.
+  int _attemptId = 0;
 
   ConnectionStatus _status = const ConnectionStatus();
 
@@ -178,6 +212,7 @@ class ConnectionController extends ChangeNotifier {
   /// Stops connecting and closes any live connection.
   Future<void> disconnect() async {
     _wantConnection = false;
+    _attemptId++;
     _reconnectTimer?.cancel();
     _renewTimer?.cancel();
 
@@ -186,48 +221,32 @@ class ConnectionController extends ChangeNotifier {
     _set(const ConnectionStatus(phase: ConnectionPhase.idle));
   }
 
-  Future<void> _attempt(PairedPc pc) async {
+  Future<void> _attempt(PairedPc requested) async {
     if (!_wantConnection || _disposed) return;
+
+    final attempt = ++_attemptId;
+    bool superseded() => attempt != _attemptId || _disposed;
 
     await _teardown();
 
+    var pc = requested;
+
     try {
+      // The record as it is stored now, not as it was when this connection was first asked
+      // for: a retry may be running long after the user changed the PC's remote address.
+      pc = await _pairedStore.find(requested.deviceId) ?? requested;
+
       final identity = await _identityStore.getOrCreate();
+      if (superseded()) return;
 
-      // Direct connect first: the remembered address usually still works, and connecting to it
-      // needs no network search at all, so it also works where discovery is blocked.
-      var connected = await _connectDirect(pc, identity);
+      final connected = await _reach(pc, identity);
 
-      if (connected == null) {
-        _set(_status.copyWith(phase: ConnectionPhase.locating, message: 'Looking for ${pc.deviceName}…'));
-
-        final endpoint = await _locate(pc);
-        if (endpoint == null) {
-          _scheduleRetry(pc, '${pc.deviceName} is not answering on this network.');
-          return;
-        }
-
-        final client = ControlClient(identity: identity);
-
-        _set(_status.copyWith(
-          phase: ConnectionPhase.connecting,
-          message: 'Connecting to ${endpoint.host}…',
-        ));
-
-        await client.connect(
-          host: endpoint.host,
-          port: endpoint.port,
-
-          // The pinned fingerprint. A PC presenting anything else is refused outright rather
-          // than trusted on first use.
-          expectedFingerprint: pc.fingerprint,
-        );
-
-        connected = (client: client, host: endpoint.host, port: endpoint.port);
+      if (superseded()) {
+        await connected.client.dispose();
+        return;
       }
 
       final client = connected.client;
-      final endpoint = (host: connected.host, port: connected.port);
       _client = client;
 
       _set(_status.copyWith(
@@ -244,20 +263,32 @@ class ConnectionController extends ChangeNotifier {
         appVersion: '0.2.0',
       );
 
+      if (superseded()) return;
+
       _eventSubscription = client.events.listen(_onEvent);
       _closedSubscription = client.onClosed.listen((reason) => _onClosed(pc, reason));
 
       _scheduleRenewal(hello.tokenTtlSeconds);
 
-      final updated = pc.copyWith(
+      // Read again so that an address the user edited while this was connecting is kept.
+      final stored = await _pairedStore.find(pc.deviceId) ?? pc;
+
+      final seen = stored.copyWith(
         deviceName: hello.deviceName,
-        lastAddress: endpoint.host,
-        lastPort: endpoint.port,
         lastSeenAt: DateTime.now(),
         permissions: hello.permissions,
       );
 
+      // The remembered address is where the PC is on the local network. Getting through on the
+      // remote address says nothing about that, so it must not replace it: back at home the
+      // local address is still the fastest way in, and the remote address stays what the user
+      // typed.
+      final updated = connected.viaRemote
+          ? seen
+          : seen.copyWith(lastAddress: connected.host, lastPort: connected.port);
+
       await _pairedStore.save(updated);
+      if (superseded()) return;
 
       _backoff = const Duration(seconds: 1);
 
@@ -267,11 +298,14 @@ class ConnectionController extends ChangeNotifier {
         permissions: hello.permissions,
         capabilities: hello.capabilities,
         tlsDescription: client.tlsDescription,
+        viaRemoteAddress: connected.viaRemote,
         clearMessage: true,
       ));
 
       await refreshState();
     } on CertificatePinMismatch catch (error) {
+      if (superseded()) return;
+
       // Never retried. Either the PC was reinstalled — in which case re-pairing is the fix —
       // or something is impersonating it, in which case retrying is exactly wrong.
       _wantConnection = false;
@@ -283,9 +317,152 @@ class ConnectionController extends ChangeNotifier {
         requiresRepair: true,
       ));
     } on ControlChannelException catch (error) {
+      if (superseded()) return;
+
+      if (error.code == ErrorCodes.notPaired) {
+        // The PC's owner removed this device. No amount of retrying brings a pairing back, and
+        // a banner counting down to the next attempt hides the one thing that would: pairing
+        // again.
+        _wantConnection = false;
+        await _teardown();
+
+        _set(_status.copyWith(
+          phase: ConnectionPhase.failed,
+          message: '${pc.deviceName} no longer recognises this device. Pair with it again.',
+          requiresRepair: true,
+        ));
+        return;
+      }
+
       _scheduleRetry(pc, error.message);
     } on Object catch (error) {
+      if (superseded()) return;
       _scheduleRetry(pc, 'Could not connect: $error');
+    }
+  }
+
+  /// Gets a pinned connection to the PC, trying each place it might be in turn: the last
+  /// address, wherever a scan finds it, then the remote address the user entered.
+  ///
+  /// Throws [ControlChannelException] with the reason to show when none of them works.
+  Future<({ControlClient client, String host, int port, bool viaRemote})> _reach(
+    PairedPc pc,
+    DeviceIdentity identity,
+  ) async {
+    final remoteHost = pc.remoteAddress;
+    final hasRemote = remoteHost != null;
+
+    // Direct connect first: the remembered address usually still works, and connecting to it
+    // needs no network search at all, so it also works where discovery is blocked.
+    final direct = await _connectDirect(pc, identity);
+    if (direct != null) {
+      return (client: direct.client, host: direct.host, port: direct.port, viaRemote: false);
+    }
+
+    _set(_status.copyWith(
+      phase: ConnectionPhase.locating,
+      message: 'Looking for ${pc.deviceName}…',
+    ));
+
+    var failure = '${pc.deviceName} is not answering on this network.';
+
+    final endpoint = await _locate(
+      pc,
+      scanFor: hasRemote ? _scanTimeBeforeRemote : _scanTime,
+
+      // The second try of the remembered address is for a PC that was only slow. With a remote
+      // address to fall back on it is not worth the wait.
+      retryRemembered: !hasRemote,
+    );
+
+    if (endpoint != null) {
+      _set(_status.copyWith(
+        phase: ConnectionPhase.connecting,
+        message: 'Connecting to ${endpoint.host}…',
+      ));
+
+      try {
+        // A certificate mismatch here is final and propagates: the scan matched this PC's own
+        // id, so something else answering for it is not an accident.
+        final client = await _open(
+          identity,
+          pc,
+          host: endpoint.host,
+          port: endpoint.port,
+          timeout: hasRemote ? _foundTimeoutBeforeRemote : _foundTimeout,
+        );
+
+        return (client: client, host: endpoint.host, port: endpoint.port, viaRemote: false);
+      } on ControlChannelException catch (error) {
+        if (!hasRemote) rethrow;
+        failure = error.message;
+      }
+    }
+
+    if (!hasRemote) throw ControlChannelException(failure);
+
+    final remotePort = pc.effectiveRemotePort;
+    final remoteLabel = pc.remoteAddressLabel ?? remoteHost;
+
+    _set(_status.copyWith(
+      phase: ConnectionPhase.connecting,
+      message: 'Trying the remote address $remoteLabel…',
+    ));
+
+    try {
+      final client = await _open(
+        identity,
+        pc,
+        host: remoteHost,
+        port: remotePort,
+        timeout: _remoteTimeout,
+      );
+
+      return (client: client, host: remoteHost, port: remotePort, viaRemote: true);
+    } on CertificatePinMismatch {
+      // Refused exactly like any other mismatch — nothing was connected. But the likeliest
+      // cause is an address typed for the wrong machine, not a reinstalled PC, so the message
+      // points at the address instead of asking for a new pairing, and the search goes on: the
+      // PC may still turn up on the local network.
+      throw ControlChannelException(
+        'The device at $remoteLabel is not ${pc.deviceName}: its certificate does not match. '
+        'Check the remote address on the Devices tab.',
+      );
+    } on ControlChannelException {
+      throw ControlChannelException(
+        '${pc.deviceName} is not answering on this network or at $remoteLabel.',
+      );
+    }
+  }
+
+  /// Opens one connection, pinned to the PC's fingerprint.
+  ///
+  /// Every address this controller ever connects to goes through here, so there is exactly one
+  /// place the pin is supplied and no path that could leave it out.
+  Future<ControlClient> _open(
+    DeviceIdentity identity,
+    PairedPc pc, {
+    required String host,
+    required int port,
+    required Duration timeout,
+  }) async {
+    final client = _clientFactory(identity);
+
+    try {
+      await client.connect(
+        host: host,
+        port: port,
+
+        // The pinned fingerprint. A PC presenting anything else is refused outright rather
+        // than trusted on first use.
+        expectedFingerprint: pc.fingerprint,
+        timeout: timeout,
+      );
+
+      return client;
+    } on Object {
+      await client.dispose();
+      rethrow;
     }
   }
 
@@ -303,29 +480,33 @@ class ConnectionController extends ChangeNotifier {
 
     _set(_status.copyWith(phase: ConnectionPhase.connecting, message: 'Connecting to $host…'));
 
-    final client = ControlClient(identity: identity);
     try {
-      await client.connect(
+      final client = await _open(
+        identity,
+        pc,
         host: host,
         port: pc.lastPort,
-        expectedFingerprint: pc.fingerprint,
-        timeout: const Duration(seconds: 3),
+        timeout: _directTimeout,
       );
+
       return (client: client, host: host, port: pc.lastPort);
     } on Object {
-      await client.dispose();
       return null;
     }
   }
 
-  /// Finds where the PC is right now.
-  Future<({String host, int port})?> _locate(PairedPc pc) async {
+  /// Finds where the PC is on this network right now.
+  Future<({String host, int port})?> _locate(
+    PairedPc pc, {
+    required Duration scanFor,
+    required bool retryRemembered,
+  }) async {
     final remembered = pc.lastAddress;
 
     // Scan. Matching on device id rather than address is what makes a changed IP
     // a non-event.
     try {
-      await for (final beacon in _discovery.scan(duration: const Duration(seconds: 4))) {
+      await for (final beacon in _discovery.scan(duration: scanFor)) {
         if (beacon.deviceId == pc.deviceId) {
           return (host: beacon.address, port: beacon.port);
         }
@@ -336,7 +517,7 @@ class ConnectionController extends ChangeNotifier {
 
     // Last resort: the remembered address again, in case it was only slow to answer the direct
     // attempt.
-    if (remembered != null) {
+    if (retryRemembered && remembered != null) {
       return (host: remembered, port: pc.lastPort);
     }
 

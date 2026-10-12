@@ -85,6 +85,71 @@ internal static partial class NativeMethods
         uint flags);
 
     // ---------------------------------------------------------------------
+    // user32 / dwmapi — window state, for window.list and window.action
+    // ---------------------------------------------------------------------
+
+    internal const int SwMaximize = 3;
+    internal const int SwMinimize = 6;
+
+    /// <summary>GWL_EXSTYLE: the extended window styles.</summary>
+    internal const int GwlExStyle = -20;
+
+    /// <summary>A floating palette: never on the taskbar, never in Alt+Tab.</summary>
+    internal const long WsExToolWindow = 0x00000080;
+
+    /// <summary>Forces a window onto the taskbar even when another rule would hide it.</summary>
+    internal const long WsExAppWindow = 0x00040000;
+
+    /// <summary>A window that does not take the foreground when clicked, e.g. an on-screen keyboard.</summary>
+    internal const long WsExNoActivate = 0x08000000;
+
+    /// <summary>GA_ROOT: the top-level window at the head of the parent chain.</summary>
+    internal const uint GaRoot = 2;
+
+    /// <summary>DWMWA_CLOAKED: nonzero when the window is "visible" but not actually shown.</summary>
+    internal const int DwmwaCloaked = 14;
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsWindow(nint window);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsZoomed(nint window);
+
+    [LibraryImport("user32.dll")]
+    internal static partial nint GetForegroundWindow();
+
+    [LibraryImport("user32.dll")]
+    internal static partial nint GetAncestor(nint window, uint flags);
+
+    /// <remarks>Only the 64-bit entry point is declared: every host is published for x64 or ARM64.</remarks>
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    internal static partial nint GetWindowLongPtr(nint window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern int GetClassName(nint window, StringBuilder className, int maxCount);
+
+    /// <summary>
+    /// Changes a window's show state without waiting for its thread to process the request.
+    /// </summary>
+    /// <remarks>
+    /// Used instead of <see cref="ShowWindow"/> for windows that belong to other processes: a
+    /// window whose application has hung would otherwise hang the caller with it.
+    /// </remarks>
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ShowWindowAsync(nint window, int command);
+
+    /// <remarks>
+    /// Windows 8 introduced cloaking: a suspended Store app and a window on another virtual desktop
+    /// both report <c>IsWindowVisible</c> as true while showing nothing. Alt+Tab leaves them out,
+    /// and this is how it knows to.
+    /// </remarks>
+    [LibraryImport("dwmapi.dll")]
+    internal static partial int DwmGetWindowAttribute(nint window, int attribute, out int value, int size);
+
+    // ---------------------------------------------------------------------
     // shell32 — packaged (Store/UWP) app activation
     // ---------------------------------------------------------------------
 

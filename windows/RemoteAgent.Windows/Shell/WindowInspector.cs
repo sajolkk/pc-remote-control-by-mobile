@@ -118,6 +118,109 @@ public sealed class WindowInspector
     }
 
     /// <summary>
+    /// Enumerates the windows Alt+Tab would show, front to back.
+    /// </summary>
+    /// <remarks>
+    /// Starts from the same "main window" heuristic as <see cref="EnumerateByProcess"/> — visible,
+    /// titled, unowned — and then removes what a person would not call an open window: tool
+    /// windows and no-activate overlays, cloaked windows (suspended Store apps, windows on another
+    /// virtual desktop), and the shell's own desktop surfaces. <c>EnumWindows</c> walks in Z order,
+    /// so the result is already ordered with the most recently used window first.
+    /// </remarks>
+    public IReadOnlyList<TopLevelWindow> EnumerateAltTabWindows()
+    {
+        var result = new List<TopLevelWindow>();
+
+        bool Callback(nint window, nint _)
+        {
+            if (TryDescribeAltTabWindow(window, out TopLevelWindow described))
+            {
+                result.Add(described);
+            }
+
+            return true;
+        }
+
+        NativeMethods.EnumWindows(Callback, nint.Zero);
+        return result;
+    }
+
+    /// <summary>
+    /// Describes one window if it is a live, visible, top-level application window right now.
+    /// </summary>
+    /// <remarks>
+    /// This is also the validation applied to a window handle that came back from a phone: a
+    /// handle is just a number, numbers get reused, and the phone's list may be seconds old. A
+    /// handle that no longer satisfies every rule here is treated as gone.
+    /// </remarks>
+    public bool TryDescribeAltTabWindow(nint window, out TopLevelWindow described)
+    {
+        described = default;
+
+        try
+        {
+            if (window == nint.Zero || !NativeMethods.IsWindow(window) || !NativeMethods.IsWindowVisible(window))
+            {
+                return false;
+            }
+
+            // Top-level and unowned: not a child control, not a dialog hanging off another window.
+            if (NativeMethods.GetAncestor(window, NativeMethods.GaRoot) != window ||
+                NativeMethods.GetWindow(window, GwOwner) != nint.Zero)
+            {
+                return false;
+            }
+
+            long exStyle = NativeMethods.GetWindowLongPtr(window, NativeMethods.GwlExStyle);
+            bool appWindow = (exStyle & NativeMethods.WsExAppWindow) != 0;
+
+            if ((exStyle & NativeMethods.WsExToolWindow) != 0 ||
+                (!appWindow && (exStyle & NativeMethods.WsExNoActivate) != 0))
+            {
+                return false;
+            }
+
+            if (NativeMethods.DwmGetWindowAttribute(window, NativeMethods.DwmwaCloaked, out int cloaked, sizeof(int)) == 0 &&
+                cloaked != 0)
+            {
+                return false;
+            }
+
+            int length = NativeMethods.GetWindowTextLength(window);
+            if (length <= 0)
+            {
+                return false;
+            }
+
+            var className = new StringBuilder(64);
+            NativeMethods.GetClassName(window, className, className.Capacity);
+
+            // The desktop itself and the taskbar are visible, titled, unowned windows too.
+            if (className.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
+            {
+                return false;
+            }
+
+            NativeMethods.GetWindowThreadProcessId(window, out uint processId);
+            if (processId == 0)
+            {
+                return false;
+            }
+
+            var title = new StringBuilder(length + 1);
+            NativeMethods.GetWindowText(window, title, title.Capacity);
+
+            described = new TopLevelWindow(window, processId, title.ToString(), NativeMethods.IsIconic(window));
+            return true;
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException)
+        {
+            _logger.LogTrace(ex, "Skipped a window that disappeared while it was being examined.");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Brings a window to the foreground, restoring it if minimized.
     /// </summary>
     /// <remarks>

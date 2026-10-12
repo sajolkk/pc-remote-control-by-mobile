@@ -49,6 +49,7 @@ internal sealed class PairingQrWindow : Window
         _expiresAt = expiresAt;
 
         Title = "PC-Remote: pair a device";
+        Icon = AppIcon.ForWindow();
         SizeToContent = SizeToContent.Height;
         Width = 420;
         ResizeMode = ResizeMode.NoResize;

@@ -35,6 +35,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\assets\pc-remote.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -51,6 +52,12 @@
     <PackageReference Include="Serilog.Extensions.Hosting" Version="9.0.0" />
     <!-- QR rendering for the pairing code. -->
     <PackageReference Include="QRCoder" Version="1.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The same file as ApplicationIcon, embedded so the tray icon and the windows can load it
+         at whatever size they need (Ui/AppIcon.cs). -->
+    <EmbeddedResource Include="..\assets\pc-remote.ico" LogicalName="RemoteAgent.Session.pc-remote.ico" />
   </ItemGroup>
 
 </Project>

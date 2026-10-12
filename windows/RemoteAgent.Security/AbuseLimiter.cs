@@ -160,6 +160,16 @@ public sealed class AbuseLimiter
 /// Sized generously because the input path legitimately sends thousands of messages
 /// a minute while someone is dragging the mouse. Its purpose is to bound the damage
 /// from a runaway or malicious client, not to shape normal traffic.
+/// <para>
+/// The arithmetic, since remote input depends on it: the phone coalesces pointer moves to
+/// about 60 a second and sends them without waiting for replies. The default budget of 6000
+/// requests a minute is 100 a second sustained, which leaves room for the clicks, keys and
+/// status calls that ride alongside a drag. The bucket holds two seconds' worth, because a
+/// phone on a stalled Wi-Fi link does not stop producing moves: they queue in its socket and
+/// arrive together when the link recovers, and that burst is traffic the user generated, not
+/// abuse. Whatever does exceed the budget is answered with a retryable error and the
+/// connection carries on.
+/// </para>
 /// </remarks>
 public sealed class RequestRateLimiter
 {
@@ -179,9 +189,9 @@ public sealed class RequestRateLimiter
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _permitsPerSecond = Math.Max(1, requestsPerMinute) / 60.0;
 
-        // One second of burst headroom, so a batch of input events at the start of a
-        // gesture is never throttled.
-        _burstCapacity = Math.Max(_permitsPerSecond, 50);
+        // Two seconds of burst headroom, so neither the batch of input events at the start of
+        // a gesture nor the backlog released after a brief network stall is throttled.
+        _burstCapacity = Math.Max(_permitsPerSecond * 2, 50);
         _available = _burstCapacity;
         _lastRefill = clock.UtcNow;
     }

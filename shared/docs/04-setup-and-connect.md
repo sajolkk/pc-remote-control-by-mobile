@@ -3,9 +3,8 @@
 Step by step: prepare the PC, install the mobile app, pair the two once, then connect and use it.
 Everything happens on your own network. There is no account, cloud service or port forwarding.
 
-> **Current status:** everything below works on the PC side. The screen-streaming tab has not yet
-> been tried on a physical phone ([Phase 3 notes §6](03-phase3-streaming-notes.md)), so treat that
-> part as a first test and report what you see.
+> **Current status:** pairing, streaming, remote control, window and file management have been run
+> from an Android emulator against a real PC; pairing and streaming also on a physical phone.
 
 ---
 
@@ -38,7 +37,7 @@ when something does not work.
 | | Requirement |
 |---|---|
 | PC | Windows 10 1809 or later, or Windows 11, x64 or ARM64 |
-| Phone | Android with a **64-bit (arm64) processor** for the ready-made APK — practically every phone from the last seven years; iOS only by building it yourself |
+| Phone | Android 7.0 or later (the ready-made APK covers 64-bit and 32-bit ARM phones and x86_64 emulators); iOS only by building it yourself |
 | Network | PC and phone on the **same Wi-Fi / LAN**, with the network set to **Private** on the PC |
 | To build from source | .NET 10 SDK on the PC; Flutter 3.44 (Dart 3.12) for the app |
 
@@ -174,7 +173,7 @@ phone will not be able to connect.
 ### 2.1 Android — install the ready-made APK
 
 The file is [`artifacts/release/Android/PC-Remote.apk`](../../artifacts/release/Android/PC-Remote.apk)
-(66 MB), next to the PC build. It is a copy of Flutter's own output,
+(about 100 MB), next to the PC build. It is a copy of Flutter's own output,
 `mobile/remote_control_app/build/app/outputs/flutter-apk/app-release.apk`, placed there because
 `build/` is git-ignored and editors tend to hide it. Two ways to get it onto the phone:
 
@@ -198,9 +197,8 @@ adb install -r artifacts\release\Android\PC-Remote.apk
 
 About this APK:
 
-- **64-bit phones only (arm64).** Nearly every Android phone from the last seven years qualifies.
-  A very old 32-bit phone reports "App not installed", and needs an APK built without
-  `--target-platform android-arm64`.
+- **Android 7.0 or later**, on 64-bit ARM, 32-bit ARM or x86_64. If the phone says "There was a
+  problem parsing the package", the file did not arrive whole: check it is about 100 MB.
 - **Signed with the debug key.** Fine for your own phones. Publishing to the Play Store needs a
   proper release signing key, which is not set up yet.
 - **Updating later:** install the new APK over the old one. Pairings survive. Uninstalling the app
@@ -210,7 +208,7 @@ About this APK:
 
 ```powershell
 cd mobile/remote_control_app
-flutter build apk --release --target-platform android-arm64
+flutter build apk --release
 ```
 
 The result lands in `build\app\outputs\flutter-apk\app-release.apk`. With a phone connected,
@@ -231,7 +229,7 @@ The result lands in `build\app\outputs\flutter-apk\app-release.apk`. With a phon
 >   kotlin.compiler.execution.strategy=in-process
 >   ```
 >
-> - build for arm64 only, as above;
+> - build for one architecture only: add `--target-platform android-arm64`;
 > - close browsers during the build if it still fails.
 
 ### 2.3 iOS
@@ -307,9 +305,9 @@ After the first time, the app reconnects by itself whenever the PC is reachable.
 | Tab | What you can do |
 |---|---|
 | **Devices** | Pair, connect, see which PCs are nearby |
-| **Screen** | Watch the PC's screen live. Pinch to zoom, double-tap to reset. The toolbar has monitor switching, quality (Auto / 1080p / 720p / data saver), screenshot, stream details and full screen |
+| **Screen** | Watch and control the PC's screen live. **Touch**: tap = click, double-tap = double click, hold = right click, drag = drag, two fingers = scroll, pinch = zoom, three fingers = move the zoomed view. **Trackpad**: drag moves the cursor, tap clicks, two-finger tap = right click. The keyboard button types on the PC and shows Esc/Tab/Ctrl/Alt/Shift/Win, arrows, F-keys and shortcuts. The toolbar also has view-only, monitor switching, quality, screenshot, stream details and full screen |
 | **System** | Lock, sign out, sleep, restart, shut down, cancel a pending shutdown |
-| **Apps** | Browse installed apps, launch, focus or close them; open a browser or a URL |
+| **Manage** | **Apps**: browse installed apps, launch, focus or close them; open a browser or a URL. **Windows**: switch to, minimize, maximize, restore or close any open window. **Files**: browse folders and drives; open on the PC, create, rename, copy, move, delete (to the Recycle Bin by default) |
 | **Settings** | This device's identity, the permissions the PC has granted it, what the PC supports, and "Reset this device" (forget every PC) |
 
 The screen stream runs only while the **Screen** tab is open and the app is in the foreground. It
@@ -317,9 +315,28 @@ stops by itself when you switch away, so it costs the PC nothing when you are no
 
 ### Permissions
 
-A newly paired phone can **view the screen** and **control input** (input arrives in a later
-phase). Power controls and app launching must be granted on the PC. The **Settings** tab shows
-what this phone currently has.
+A newly paired phone can **view the screen** and **control the mouse and keyboard**. Apps and
+windows, files, power and clipboard are off until you grant them on the PC, either way:
+
+- tick **Give this device full control** in the pairing prompt before clicking Allow; or
+- tray icon → **Devices** → tick the boxes under that phone. Changes apply straight away.
+
+The **Settings** tab on the phone shows what it currently has.
+
+### Using it away from home
+
+PC-Remote has no relay server: the phone must be able to reach the PC's address. Outside your LAN
+that means a VPN you run yourself. Tailscale is the simplest: install it on the PC and the phone
+and sign both in. Then on the phone: **Devices → ⋮ next to the PC → Add remote address** and enter
+the PC's VPN address (for Tailscale, the `100.x.y.z` one). The app tries the LAN first and falls
+back to that address. The installer opens the control and streaming ports to `100.64.0.0/10`
+(Tailscale's range) on any network profile; for another VPN, set `network.remoteAccessSubnets` in
+`config.json` and run the installer again. This path has not been tested yet.
+
+### What Windows does not allow
+
+Any ordinary app, this one included, cannot see or control the lock screen or a UAC prompt, cannot
+send Ctrl+Alt+Del, and cannot click inside a window that is running as administrator.
 
 ---
 
@@ -328,7 +345,8 @@ what this phone currently has.
 | Symptom | Likely cause and fix |
 |---|---|
 | "Windows protected your PC" when starting the `.exe` | SmartScreen: the executables are not code-signed yet. **More info → Run anyway** (§1.1) |
-| Phone says "App not installed" | A 32-bit-only phone (the APK is arm64), or a copy of the app signed with a different key is already installed. Uninstall the old app first; this also removes its pairings |
+| Phone says "App not installed" | A copy of the app signed with a different key is already installed. Uninstall the old app first; this also removes its pairings |
+| Apps, Files or power say "not enabled for this device" | That permission is off for this phone. Tray icon → **Devices** on the PC and tick it |
 | **Found on this network** stays empty | PC-Remote is not installed or not running: run `PC-Remote-Setup.exe`, or open PC-Remote from the Start menu to start it. Otherwise the phone and PC are on different networks (a guest Wi-Fi, a second router or extender), or the PC's network is **Public** (§1.4). Try **Enter the PC's address** (§3.1). Some routers block devices from seeing each other ("AP/client isolation"); turn that off |
 | Opening PC-Remote says it is not running | The service starts a minute or two after Windows starts. Choose **Yes** to start it now |
 | No tray icon | The two executables are not in the same folder, or no one is signed in. Check the logs (§1.3) |

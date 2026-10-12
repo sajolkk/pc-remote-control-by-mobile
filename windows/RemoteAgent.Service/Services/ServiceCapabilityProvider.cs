@@ -90,7 +90,9 @@ public sealed class ServiceCapabilityProvider : ICapabilityProvider
 
         // --- Configuration gates that remove capabilities regardless of ability. ---
 
-        if (options.Files.AllowedRoots.Length == 0)
+        // File management with the built-in roots switched off and nothing listed in their place
+        // has nowhere to operate, so the phone should not offer it.
+        if (!options.Files.UseDefaultRoots && (options.Files.AllowedRoots?.Length ?? 0) == 0)
         {
             capabilities.Remove(CapabilityNames.Files);
         }

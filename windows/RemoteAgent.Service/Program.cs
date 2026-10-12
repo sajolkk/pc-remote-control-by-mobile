@@ -218,12 +218,18 @@ public static class Program
 
         builder.Services.AddSingleton<IPairingApprovalService, SessionAgentApprovalService>();
 
-        builder.Services.AddSingleton<IPairingService>(provider => new PairingService(
-            provider.GetRequiredService<IPairingStore>(),
-            provider.GetRequiredService<IPairingApprovalService>(),
-            provider.GetRequiredService<IClock>(),
-            provider.GetRequiredService<ILogger<PairingService>>(),
-            provider.GetRequiredService<IOptionsMonitor<AgentOptions>>().CurrentValue.Pairing));
+        builder.Services.AddSingleton<IPairingService>(provider =>
+        {
+            // The monitor, not a snapshot: see the PairingService constructor.
+            IOptionsMonitor<AgentOptions> monitor = provider.GetRequiredService<IOptionsMonitor<AgentOptions>>();
+
+            return new PairingService(
+                provider.GetRequiredService<IPairingStore>(),
+                provider.GetRequiredService<IPairingApprovalService>(),
+                provider.GetRequiredService<IClock>(),
+                provider.GetRequiredService<ILogger<PairingService>>(),
+                () => monitor.CurrentValue.Pairing);
+        });
 
         // --- IPC and session agent supervision ---
 

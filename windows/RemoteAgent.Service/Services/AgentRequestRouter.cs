@@ -9,6 +9,7 @@ using RemoteAgent.Protocol;
 using RemoteAgent.Protocol.Messages;
 using RemoteAgent.Security;
 using RemoteAgent.Service.Network;
+using FileOptions = RemoteAgent.Core.Configuration.FileOptions;
 
 namespace RemoteAgent.Service.Services;
 
@@ -76,6 +77,8 @@ public sealed class AgentRequestRouter
             IpcCommands.ListDevices => await ListDevicesAsync(request, cancellationToken).ConfigureAwait(false),
             IpcCommands.SetDeviceBlocked => await SetDeviceBlockedAsync(request, cancellationToken).ConfigureAwait(false),
             IpcCommands.RemoveDevice => await RemoveDeviceAsync(request, cancellationToken).ConfigureAwait(false),
+            IpcCommands.SetDevicePermissions => await SetDevicePermissionsAsync(request, cancellationToken).ConfigureAwait(false),
+            IpcCommands.GetFilePolicy => GetFilePolicy(request),
             _ => IpcResponse.Failure(
                 request.Id,
                 ErrorCodes.UnknownCommand,
@@ -208,6 +211,8 @@ public sealed class AgentRequestRouter
                 ["lastSeenAt"] = device.LastSeenAt?.UtcDateTime.ToString("O"),
                 ["lastAddress"] = device.LastAddress,
                 ["blocked"] = device.Blocked,
+                ["permissions"] = new JsonArray(
+                    [.. PermissionSet.ToNames(device.Permissions).Select(name => JsonValue.Create(name))]),
                 ["connected"] = live is not null,
                 ["address"] = live?.RemoteAddress,
             });
@@ -252,6 +257,95 @@ public sealed class AgentRequestRouter
         return removed
             ? IpcResponse.Success(request.Id)
             : IpcResponse.Failure(request.Id, ErrorCodes.NotFound, "That device is not paired.");
+    }
+
+    /// <summary>
+    /// Replaces a device's permission groups. A live connection picks the change up through the
+    /// store's change notification, so it applies to that device's very next command.
+    /// </summary>
+    /// <remarks>
+    /// The list must be an array of strings and every name must be one this build knows. An
+    /// unrecognised name fails the whole request rather than being dropped, because the caller is
+    /// this product's own UI: a name it sends and the service does not know is a version mismatch
+    /// worth surfacing, not something to half-apply.
+    /// </remarks>
+    private async Task<IpcResponse> SetDevicePermissionsAsync(IpcRequest request, CancellationToken cancellationToken)
+    {
+        if (ReadDeviceId(request) is not { } deviceId ||
+            request.Args is not { } args ||
+            !args.TryGetProperty("permissions", out JsonElement list) ||
+            list.ValueKind != JsonValueKind.Array)
+        {
+            return IpcResponse.Failure(request.Id, ErrorCodes.InvalidArguments, "deviceId and permissions are required.");
+        }
+
+        var names = new List<string>();
+        foreach (JsonElement element in list.EnumerateArray())
+        {
+            string? name = element.ValueKind == JsonValueKind.String ? element.GetString() : null;
+
+            if (name is null || !PermissionSet.AllNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                return IpcResponse.Failure(request.Id, ErrorCodes.InvalidArguments, "Unknown permission name.");
+            }
+
+            names.Add(name);
+        }
+
+        Permission permissions = PermissionSet.FromNames(names);
+
+        bool updated = await _pairingStore
+            .SetPermissionsAsync(deviceId, permissions, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!updated)
+        {
+            return IpcResponse.Failure(request.Id, ErrorCodes.NotFound, "That device is not paired.");
+        }
+
+        _logger.LogInformation(
+            "Permissions for device {DeviceId} were set at the PC: {Permissions}",
+            deviceId,
+            permissions == Permission.None ? "(none)" : string.Join(",", PermissionSet.ToNames(permissions)));
+
+        return IpcResponse.Success(request.Id);
+    }
+
+    /// <summary>
+    /// Tells the agent which directories file management may touch.
+    /// </summary>
+    /// <remarks>
+    /// Read from the live options on every call, so an edit to the configuration file applies to
+    /// the next file command without restarting anything. See
+    /// <see cref="IpcCommands.GetFilePolicy"/> for why the agent asks instead of reading the file.
+    /// </remarks>
+    private IpcResponse GetFilePolicy(IpcRequest request)
+    {
+        FileOptions files = _options.CurrentValue.Files;
+
+        // The list an earlier version wrote into config.json by itself is not a choice the owner
+        // made; the configuration store removes it on upgrade, and until that write has been
+        // picked up it is ignored here for the same reason.
+        AllowedRoot[] configured = files.HasLegacyGeneratedRoots() ? [] : files.AllowedRoots ?? [];
+
+        var policy = new IpcFilePolicy
+        {
+            UseDefaultRoots = files.UseDefaultRoots,
+            MaxFileSizeMb = files.MaxFileSizeMb,
+            AllowedRoots =
+            [
+                .. configured
+                    .Where(static root => root is not null && !string.IsNullOrWhiteSpace(root.Path))
+                    .Select(static root => new IpcFileRoot
+                    {
+                        Alias = root.Alias ?? string.Empty,
+                        Path = root.Path,
+                        Write = root.Write,
+                    }),
+            ],
+        };
+
+        return IpcResponse.Success(request.Id, JsonSerializer.SerializeToNode(policy, ProtocolJson.Options));
     }
 
     private static string? ReadDeviceId(IpcRequest request) =>

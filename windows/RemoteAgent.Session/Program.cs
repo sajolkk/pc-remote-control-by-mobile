@@ -7,6 +7,8 @@ using Microsoft.Extensions.Logging;
 using RemoteAgent.Core.Abstractions;
 using RemoteAgent.Core.Commands;
 using RemoteAgent.Core.Configuration;
+using RemoteAgent.Core.Files;
+using RemoteAgent.Core.Input;
 using RemoteAgent.Ipc;
 using RemoteAgent.Session.Handlers;
 using RemoteAgent.Session.Hosting;
@@ -14,6 +16,8 @@ using RemoteAgent.Session.Ui;
 using RemoteAgent.Streaming;
 using RemoteAgent.Streaming.Adaptation;
 using RemoteAgent.Windows.Display;
+using RemoteAgent.Windows.Files;
+using RemoteAgent.Windows.Input;
 using RemoteAgent.Windows.Media;
 using RemoteAgent.Windows.Shell;
 using Microsoft.Extensions.Configuration;
@@ -144,6 +148,52 @@ public static class Program
                 provider.GetRequiredService<ILogger<MediaSession>>());
         });
 
+        // --- Remote input (Phase 4). The injector is the only platform piece; the controller that
+        //     validates, maps coordinates and tracks held keys is platform-neutral. ---
+
+        builder.Services.AddSingleton<IInputInjector, SendInputInjector>();
+
+        builder.Services.AddSingleton(provider =>
+        {
+            MediaSessionManager media = provider.GetRequiredService<MediaSessionManager>();
+
+            return new InputController(
+                provider.GetRequiredService<IInputInjector>(),
+                provider.GetRequiredService<IMonitorProvider>(),
+
+                // A point with no monitor named refers to the monitor this connection is watching.
+                media.GetSelectedMonitor,
+                provider.GetRequiredService<ILogger<InputController>>());
+        });
+
+        // --- Window management. ---
+
+        builder.Services.AddSingleton<IWindowManager, WindowsWindowManager>();
+
+        // --- File management. The allowed roots come from the service (see ServiceFilePolicy);
+        //     the built-in roots and the two shell operations come from the platform layer. ---
+
+        builder.Services.AddSingleton<ServiceFilePolicy>();
+        builder.Services.AddSingleton<IDefaultFileRoots, WindowsDefaultFileRoots>();
+        builder.Services.AddSingleton<IFileShell, WindowsFileShell>();
+
+        builder.Services.AddSingleton<IFileRootProvider>(provider =>
+        {
+            ServiceFilePolicy policy = provider.GetRequiredService<ServiceFilePolicy>();
+            return new ConfiguredFileRoots(() => policy.Current, provider.GetRequiredService<IDefaultFileRoots>());
+        });
+
+        builder.Services.AddSingleton(provider =>
+        {
+            ServiceFilePolicy policy = provider.GetRequiredService<ServiceFilePolicy>();
+
+            return new FileManager(
+                provider.GetRequiredService<IFileRootProvider>(),
+                provider.GetRequiredService<IFileShell>(),
+                provider.GetRequiredService<ILogger<FileManager>>(),
+                maxCopyBytes: () => (policy.Current?.MaxFileSizeMb ?? 2048) * 1024L * 1024L);
+        });
+
         // --- Command pipeline. Same gate, same catalog, same dispatcher as the service. ---
 
         builder.Services.AddSingleton<IAuthorizationGate, AuthorizationGate>();
@@ -211,6 +261,28 @@ public static class Program
         services.AddSingleton<ICommandHandler, MediaIceHandler>();
         services.AddSingleton<ICommandHandler, MediaStopHandler>();
         services.AddSingleton<ICommandHandler, MediaSetQualityHandler>();
+
+        services.AddSingleton<ICommandHandler, InputMouseMoveHandler>();
+        services.AddSingleton<ICommandHandler, InputMouseButtonHandler>();
+        services.AddSingleton<ICommandHandler, InputMouseClickHandler>();
+        services.AddSingleton<ICommandHandler, InputScrollHandler>();
+        services.AddSingleton<ICommandHandler, InputKeyHandler>();
+        services.AddSingleton<ICommandHandler, InputTextHandler>();
+        services.AddSingleton<ICommandHandler, InputShortcutHandler>();
+        services.AddSingleton<ICommandHandler, InputReleaseAllHandler>();
+
+        services.AddSingleton<ICommandHandler, WindowListHandler>();
+        services.AddSingleton<ICommandHandler, WindowActionHandler>();
+
+        // file.upload, file.download and file.cancel stay declared-but-unimplemented: a phone
+        // that calls one is told this PC does not support it.
+        services.AddSingleton<ICommandHandler, FileListHandler>();
+        services.AddSingleton<ICommandHandler, FileOpenHandler>();
+        services.AddSingleton<ICommandHandler, FileCreateHandler>();
+        services.AddSingleton<ICommandHandler, FileRenameHandler>();
+        services.AddSingleton<ICommandHandler, FileCopyHandler>();
+        services.AddSingleton<ICommandHandler, FileMoveHandler>();
+        services.AddSingleton<ICommandHandler, FileDeleteHandler>();
     }
 
     /// <summary>

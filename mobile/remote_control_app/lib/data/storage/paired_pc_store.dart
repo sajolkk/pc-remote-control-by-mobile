@@ -15,6 +15,8 @@ class PairedPc {
     this.lastPort = DiscoveryConstants.defaultControlPort,
     this.lastSeenAt,
     this.permissions = const [],
+    this.remoteAddress,
+    this.remotePort,
   });
 
   factory PairedPc.fromJson(Map<String, dynamic> json) => PairedPc(
@@ -28,7 +30,17 @@ class PairedPc {
             json['lastSeenAt'] == null ? null : DateTime.tryParse(json['lastSeenAt'] as String),
         permissions:
             (json['permissions'] as List<dynamic>? ?? const []).whereType<String>().toList(),
+
+        // Both absent from records written before remote addresses existed, which is the same
+        // as the user never having entered one.
+        remoteAddress: _nonEmpty(json['remoteAddress']),
+        remotePort: _port(json['remotePort']),
       );
+
+  static String? _nonEmpty(Object? value) =>
+      value is String && value.trim().isNotEmpty ? value.trim() : null;
+
+  static int? _port(Object? value) => value is int && value > 0 && value <= 65535 ? value : null;
 
   /// The PC's stable id. This, not its address, is the identity — a PC keeps working after
   /// its IP changes.
@@ -41,7 +53,8 @@ class PairedPc {
 
   final DateTime pairedAt;
 
-  /// The last address this PC answered on. A hint for a fast reconnect, never an identity.
+  /// The last address this PC answered on over the local network. A hint for a fast reconnect,
+  /// never an identity. A connection made through [remoteAddress] does not change it.
   final String? lastAddress;
 
   final int lastPort;
@@ -49,6 +62,25 @@ class PairedPc {
 
   /// The permissions the PC reported at the last handshake, for showing what is available.
   final List<String> permissions;
+
+  /// A host name or IP the user entered for reaching this PC when it is not on the phone's
+  /// network, e.g. its address on a VPN such as Tailscale. Tried only after the local network
+  /// has been, and held to the same pinned [fingerprint] as every other address.
+  final String? remoteAddress;
+
+  /// The port to use with [remoteAddress]. Null means the PC's usual port, [lastPort].
+  final int? remotePort;
+
+  /// The port a connection to [remoteAddress] is made on.
+  int get effectiveRemotePort => remotePort ?? lastPort;
+
+  /// The remote address as the user would type it, or null when none is set.
+  String? get remoteAddressLabel {
+    final host = remoteAddress;
+    if (host == null) return null;
+
+    return RemoteAddress(host: host, port: remotePort).toString();
+  }
 
   Map<String, dynamic> toJson() => {
         'deviceId': deviceId,
@@ -59,6 +91,8 @@ class PairedPc {
         'lastPort': lastPort,
         if (lastSeenAt != null) 'lastSeenAt': lastSeenAt!.toIso8601String(),
         'permissions': permissions,
+        if (remoteAddress != null) 'remoteAddress': remoteAddress,
+        if (remotePort != null) 'remotePort': remotePort,
       };
 
   PairedPc copyWith({
@@ -77,7 +111,93 @@ class PairedPc {
         lastPort: lastPort ?? this.lastPort,
         lastSeenAt: lastSeenAt ?? this.lastSeenAt,
         permissions: permissions ?? this.permissions,
+        remoteAddress: remoteAddress,
+        remotePort: remotePort,
       );
+
+  /// A copy with the remote address replaced, or removed when [remote] is null.
+  ///
+  /// Separate from [copyWith] because "leave it alone" and "clear it" both look like null
+  /// there, and silently dropping an address the user typed is the mistake to avoid.
+  PairedPc withRemoteAddress(RemoteAddress? remote) => PairedPc(
+        deviceId: deviceId,
+        deviceName: deviceName,
+        fingerprint: fingerprint,
+        pairedAt: pairedAt,
+        lastAddress: lastAddress,
+        lastPort: lastPort,
+        lastSeenAt: lastSeenAt,
+        permissions: permissions,
+        remoteAddress: remote?.host,
+        remotePort: remote?.port,
+      );
+}
+
+/// A user-entered address: a host name or IP, and optionally a port.
+class RemoteAddress {
+  const RemoteAddress({required this.host, this.port});
+
+  /// Parses `host`, `host:port`, an IPv6 address, or `[ipv6]:port`. Null when it is none of
+  /// those.
+  ///
+  /// Deliberately strict about what a host may contain. This is typed by hand, usually
+  /// copied out of a VPN app, and "http://..." or a trailing path is far more likely a paste
+  /// mistake than a host name.
+  static RemoteAddress? tryParse(String input) {
+    final text = input.trim();
+    if (text.isEmpty) return null;
+
+    String host;
+    String? portText;
+
+    if (text.startsWith('[')) {
+      final close = text.indexOf(']');
+      if (close < 0) return null;
+
+      host = text.substring(1, close);
+      final rest = text.substring(close + 1);
+
+      if (rest.isNotEmpty) {
+        if (!rest.startsWith(':')) return null;
+        portText = rest.substring(1);
+      }
+
+      if (!_ipv6.hasMatch(host) || !host.contains(':')) return null;
+    } else if (':'.allMatches(text).length > 1) {
+      // More than one colon without brackets can only be a bare IPv6 address.
+      host = text;
+      if (!_ipv6.hasMatch(host)) return null;
+    } else {
+      final colon = text.indexOf(':');
+      host = colon < 0 ? text : text.substring(0, colon);
+      portText = colon < 0 ? null : text.substring(colon + 1);
+
+      if (!_hostName.hasMatch(host)) return null;
+    }
+
+    if (portText == null) return RemoteAddress(host: host);
+
+    final port = int.tryParse(portText);
+    if (port == null || port < 1 || port > 65535) return null;
+
+    return RemoteAddress(host: host, port: port);
+  }
+
+  /// Letters, digits, dots and hyphens: an IPv4 address or a DNS name such as a MagicDNS one.
+  static final _hostName = RegExp(r'^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$');
+
+  static final _ipv6 = RegExp(r'^[0-9A-Fa-f:.]{2,45}(%[A-Za-z0-9._-]+)?$');
+
+  final String host;
+
+  /// Null means "the PC's usual port".
+  final int? port;
+
+  @override
+  String toString() {
+    if (port == null) return host;
+    return host.contains(':') ? '[$host]:$port' : '$host:$port';
+  }
 }
 
 /// Persists the PCs this device is paired with.
@@ -125,11 +245,49 @@ class PairedPcStore {
     return null;
   }
 
+  /// Saves a record, replacing the one with the same device id.
+  ///
+  /// A record arriving without a remote address keeps the one already stored. Pairing again
+  /// builds a fresh record that knows nothing about it, and that must not throw away what the
+  /// user typed. Removing the address is [setRemoteAddress]'s job.
   Future<void> save(PairedPc pc) async {
-    final all = (await getAll()).where((existing) => existing.deviceId != pc.deviceId).toList()
-      ..add(pc);
+    final all = await getAll();
 
-    await _write(all);
+    var toSave = pc;
+    if (pc.remoteAddress == null) {
+      for (final existing in all) {
+        if (existing.deviceId == pc.deviceId && existing.remoteAddress != null) {
+          toSave = pc.withRemoteAddress(
+            RemoteAddress(host: existing.remoteAddress!, port: existing.remotePort),
+          );
+        }
+      }
+    }
+
+    await _write(
+      all.where((existing) => existing.deviceId != pc.deviceId).toList()..add(toSave),
+    );
+  }
+
+  /// Sets, replaces or (with null) clears a PC's remote address, leaving everything else as
+  /// stored. Returns the updated record, or null when that PC is not paired.
+  Future<PairedPc?> setRemoteAddress(String deviceId, RemoteAddress? remote) async {
+    final all = await getAll();
+
+    PairedPc? updated;
+    final next = <PairedPc>[];
+
+    for (final existing in all) {
+      if (existing.deviceId == deviceId) {
+        updated = existing.withRemoteAddress(remote);
+        next.add(updated);
+      } else {
+        next.add(existing);
+      }
+    }
+
+    if (updated != null) await _write(next);
+    return updated;
   }
 
   Future<void> remove(String deviceId) async {

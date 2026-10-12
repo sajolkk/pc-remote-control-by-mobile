@@ -72,6 +72,19 @@ public sealed class AgentConfigurationStore
             _logger.LogInformation("Using the computer name as this PC's display name.");
         }
 
+        if (options.Files.HasLegacyGeneratedRoots())
+        {
+            // Earlier versions serialised their built-in root list into this file on first run:
+            // Downloads writable, Documents and Desktop read-only. Nobody chose that, but left in
+            // place it now reads as an owner's instruction to keep those two folders read-only.
+            // It is removed once, here; the built-in roots (files.useDefaultRoots) cover the same
+            // folders. A list that was edited in any way does not match and is left alone.
+            options.Files.AllowedRoots = [];
+            changed = true;
+            _logger.LogInformation(
+                "Removed the file roots an earlier version generated; the built-in roots now apply.");
+        }
+
         if (changed || !File.Exists(_paths.ConfigFile))
         {
             Save(options);

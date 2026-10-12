@@ -243,20 +243,6 @@ public sealed class ClientSession : IAsyncDisposable
             return;
         }
 
-        if (!_rateLimiter.TryAcquire())
-        {
-            // Not fatal: throttling a burst is better than dropping a connection that is
-            // merely enthusiastic. A client that keeps hitting this will see the failures.
-            await RespondAsync(
-                ResponseEnvelope.Failure(
-                    requestId,
-                    ErrorCodes.RateLimited,
-                    "Too many requests. Slow down.",
-                    retryable: true),
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
         ReplayVerdict verdict = _replayGuard.Evaluate(
             request.Sequence,
             request.TimestampMs,
@@ -282,6 +268,28 @@ public sealed class ClientSession : IAsyncDisposable
                 cancellationToken).ConfigureAwait(false);
 
             await _lifetime.CancelAsync().ConfigureAwait(false);
+            return;
+        }
+
+        // The rate limit is applied AFTER the replay guard has accepted the request, and the
+        // order matters. Sequence numbers must advance by exactly one. If a throttled request
+        // were turned away before the guard saw it, the guard would never record its number,
+        // the client's next request would appear to skip one, and "you are sending a little
+        // too fast" would become "sequence gap, connection closed". That is exactly the wrong
+        // outcome for remote input, where a brief burst of pointer moves is normal and a
+        // dropped connection releases every held key. Checked in this order, a throttled
+        // request is refused, the sequence stays in step, and the connection survives.
+        if (!_rateLimiter.TryAcquire())
+        {
+            // Not fatal: throttling a burst is better than dropping a connection that is
+            // merely enthusiastic. A client that keeps hitting this will see the failures.
+            await RespondAsync(
+                ResponseEnvelope.Failure(
+                    requestId,
+                    ErrorCodes.RateLimited,
+                    "Too many requests. Slow down.",
+                    retryable: true),
+                cancellationToken).ConfigureAwait(false);
             return;
         }
 

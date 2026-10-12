@@ -118,23 +118,36 @@ public sealed class CommandDispatcher : ICommandDispatcher
             CommandResult result = await ExecuteAsync(descriptor, args, requestId, caller, cancellationToken)
                 .ConfigureAwait(false);
 
-            TimeSpan elapsed = Stopwatch.GetElapsedTime(startedAt);
-            if (result.Ok)
+            // Input commands arrive at up to sixty a second while a finger is on the screen. An
+            // Information line for each would write megabytes an hour and put file I/O on the
+            // path between a touch and the pointer moving, so they are logged at Debug, which is
+            // off by default — and the level is tested first so that a disabled line costs no
+            // formatting or boxing either. Only the command name is ever logged, here or anywhere:
+            // arguments (coordinates, key codes, typed text) never reach a log at any level (§7.5).
+            LogLevel level = IsHighFrequency(descriptor.Name) ? LogLevel.Debug : LogLevel.Information;
+
+            if (_logger.IsEnabled(level))
             {
-                _logger.LogInformation(
-                    "Command executed. Command={Command} Device={DeviceId} DurationMs={DurationMs:F1}",
-                    descriptor.Name,
-                    caller.DeviceId,
-                    elapsed.TotalMilliseconds);
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "Command failed. Command={Command} Device={DeviceId} Code={Code} DurationMs={DurationMs:F1}",
-                    descriptor.Name,
-                    caller.DeviceId,
-                    result.Error?.Code,
-                    elapsed.TotalMilliseconds);
+                TimeSpan elapsed = Stopwatch.GetElapsedTime(startedAt);
+                if (result.Ok)
+                {
+                    _logger.Log(
+                        level,
+                        "Command executed. Command={Command} Device={DeviceId} DurationMs={DurationMs:F1}",
+                        descriptor.Name,
+                        caller.DeviceId,
+                        elapsed.TotalMilliseconds);
+                }
+                else
+                {
+                    _logger.Log(
+                        level,
+                        "Command failed. Command={Command} Device={DeviceId} Code={Code} DurationMs={DurationMs:F1}",
+                        descriptor.Name,
+                        caller.DeviceId,
+                        result.Error?.Code,
+                        elapsed.TotalMilliseconds);
+                }
             }
 
             return result;
@@ -162,6 +175,17 @@ public sealed class CommandDispatcher : ICommandDispatcher
             return CommandResult.Fail(ErrorCodes.Internal, "The command failed on the PC.");
         }
     }
+
+    /// <summary>
+    /// Whether a command is sent continuously during a gesture rather than once per user action.
+    /// </summary>
+    /// <remarks>
+    /// The whole <c>input.</c> family: pointer moves and wheel turns stream at the phone's frame
+    /// rate, and keys, buttons and text are excluded from routine logging with them so that the
+    /// log never records the rhythm of somebody's typing either.
+    /// </remarks>
+    public static bool IsHighFrequency(string command) =>
+        command is not null && command.StartsWith("input.", StringComparison.Ordinal);
 
     private Task<CommandResult> ExecuteAsync(
         CommandDescriptor descriptor,

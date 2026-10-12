@@ -89,3 +89,42 @@ public interface IWorkstationLocker
     /// <summary>Locks the workstation. Returns false if Windows refused.</summary>
     Task<bool> LockAsync(CancellationToken cancellationToken);
 }
+
+/// <summary>What <c>window.action</c> can ask of a window.</summary>
+public enum WindowAction
+{
+    /// <summary>Bring it to the foreground, restoring it first if minimized.</summary>
+    Focus,
+
+    /// <summary>Minimize it to the taskbar.</summary>
+    Minimize,
+
+    /// <summary>Maximize it.</summary>
+    Maximize,
+
+    /// <summary>Return it to its normal size and position.</summary>
+    Restore,
+
+    /// <summary>Ask it to close, as clicking its X does. Never a kill.</summary>
+    Close,
+}
+
+/// <summary>
+/// Lists and manipulates top-level application windows, implemented by the session agent (§4).
+/// </summary>
+/// <remarks>
+/// Ids only, like <see cref="IAppCatalog"/>: a caller can act on a window this PC listed and on
+/// nothing else, and the implementation re-validates the id on every use because a window can
+/// close — and its handle be reused by an unrelated one — between the list and the action.
+/// </remarks>
+public interface IWindowManager
+{
+    /// <summary>The visible top-level application windows, foreground first.</summary>
+    IReadOnlyList<WindowInfo> List();
+
+    /// <summary>
+    /// Performs an action on one window. Returns null when the id no longer names a live, visible
+    /// top-level window.
+    /// </summary>
+    WindowActionResult? Act(string windowId, WindowAction action);
+}

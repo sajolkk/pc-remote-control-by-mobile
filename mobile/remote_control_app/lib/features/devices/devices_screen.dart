@@ -48,7 +48,12 @@ class DevicesScreen extends ConsumerWidget {
           padding: const EdgeInsets.only(bottom: 88),
           children: [
             if (connection.status.requiresRepair)
-              _RepairNotice(message: connection.status.message ?? 'This device needs to pair again.'),
+              _RepairNotice(
+                message: connection.status.message ?? 'This device needs to pair again.',
+                onPairAgain: connection.status.pc == null
+                    ? null
+                    : () => _pairAgain(context, ref, connection.status.pc!),
+              ),
 
             _SectionHeader(
               title: 'Paired',
@@ -75,6 +80,7 @@ class DevicesScreen extends ConsumerWidget {
                             status: connection.status,
                             onConnect: () => connection.connect(pc),
                             onDisconnect: connection.disconnect,
+                            onEditRemoteAddress: () => _editRemoteAddress(context, ref, pc),
                             onForget: () => _forget(context, ref, pc),
                           ),
                       ],
@@ -95,8 +101,12 @@ class DevicesScreen extends ConsumerWidget {
                     'permission to use the local network.',
               ),
               data: (beacons) {
-                final pairedIds =
-                    (paired.valueOrNull ?? const <PairedPc>[]).map((pc) => pc.deviceId).toSet();
+                // A PC that has dropped this device is listed here again: it has to be paired
+                // afresh, and this list is where pairing starts.
+                final pairedIds = (paired.valueOrNull ?? const <PairedPc>[])
+                    .map((pc) => pc.deviceId)
+                    .where((id) => id != _needsPairing(connection.status))
+                    .toSet();
 
                 final unpaired =
                     beacons.where((beacon) => !pairedIds.contains(beacon.deviceId)).toList();
@@ -209,8 +219,10 @@ class DevicesScreen extends ConsumerWidget {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('Searching for PCs…')));
 
+    final needsPairing = _needsPairing(ref.read(connectionProvider).status);
     final pairedIds = (ref.read(pairedPcsProvider).valueOrNull ?? const <PairedPc>[])
         .map((pc) => pc.deviceId)
+        .where((id) => id != needsPairing)
         .toSet();
 
     final found = <String, DiscoveryBeacon>{};
@@ -242,6 +254,38 @@ class DevicesScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// The id of the PC that refused this device as unpaired, if that is the current state.
+  static String? _needsPairing(ConnectionStatus status) =>
+      status.requiresRepair ? status.pc?.deviceId : null;
+
+  /// Pairs again with a PC that no longer recognises this device: straight to the code screen
+  /// when the PC answers on this network, otherwise by its address.
+  Future<void> _pairAgain(BuildContext context, WidgetRef ref, PairedPc pc) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(content: Text('Looking for ${pc.deviceName}…')));
+
+    DiscoveryBeacon? found;
+    try {
+      await for (final beacon in ref.read(discoveryProvider).scan(duration: const Duration(seconds: 3))) {
+        if (beacon.deviceId == pc.deviceId) {
+          found = beacon;
+          break;
+        }
+      }
+    } on Object {
+      // Falls through to asking for the address.
+    }
+
+    messenger.hideCurrentSnackBar();
+    if (!context.mounted) return;
+
+    if (found != null) {
+      await _pairFound(context, ref, found);
+    } else {
+      await _enterAddress(context, ref);
+    }
   }
 
   Future<void> _startPairing(BuildContext context, WidgetRef ref) async {
@@ -331,6 +375,51 @@ class DevicesScreen extends ConsumerWidget {
     await _pairFound(context, ref, beacon);
   }
 
+  /// Adds, changes or removes the address used to reach a PC that is not on this network.
+  ///
+  /// Only ever an extra place to look. The PC that answers there is held to the certificate
+  /// pinned at pairing exactly as it is on the local network, so a wrong or hijacked address
+  /// gets a refusal, not a connection.
+  Future<void> _editRemoteAddress(BuildContext context, WidgetRef ref, PairedPc pc) async {
+    final result = await showDialog<({RemoteAddress? remote})>(
+      context: context,
+      builder: (_) => _RemoteAddressDialog(pc: pc),
+    );
+
+    if (result == null) return;
+
+    final updated = await ref.read(pairedStoreProvider).setRemoteAddress(pc.deviceId, result.remote);
+    ref.invalidate(pairedPcsProvider);
+
+    if (updated == null || !context.mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            result.remote == null
+                ? 'Remote address removed for ${pc.deviceName}.'
+                : 'Remote address saved for ${pc.deviceName}.',
+          ),
+        ),
+      );
+
+    // If the app is in the middle of failing to reach this very PC, the new address is most
+    // likely the fix, so try it now rather than at the end of a back-off.
+    final connection = ref.read(connectionProvider);
+    final status = connection.status;
+
+    final isSearching = status.pc?.deviceId == pc.deviceId &&
+        !status.isConnected &&
+        status.phase != ConnectionPhase.idle &&
+        status.phase != ConnectionPhase.failed;
+
+    if (isSearching && result.remote != null) {
+      connection.connect(updated).ignore();
+    }
+  }
+
   Future<void> _forget(BuildContext context, WidgetRef ref, PairedPc pc) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -373,6 +462,7 @@ class _PairedTile extends StatelessWidget {
     required this.status,
     required this.onConnect,
     required this.onDisconnect,
+    required this.onEditRemoteAddress,
     required this.onForget,
   });
 
@@ -381,6 +471,7 @@ class _PairedTile extends StatelessWidget {
   final ConnectionStatus status;
   final VoidCallback onConnect;
   final Future<void> Function() onDisconnect;
+  final VoidCallback onEditRemoteAddress;
   final VoidCallback onForget;
 
   @override
@@ -397,6 +488,8 @@ class _PairedTile extends StatelessWidget {
     // from "connected", because a reachable PC we are not connected to is a useful state.
     final isOnline = discovered != null;
 
+    final remote = pc.remoteAddressLabel;
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: ListTile(
@@ -409,7 +502,12 @@ class _PairedTile extends StatelessWidget {
                   : Theme.of(context).disabledColor,
         ),
         title: Text(pc.deviceName),
-        subtitle: Text(_subtitle(isConnected, isOnline)),
+        subtitle: Text(
+          remote == null
+              ? _subtitle(isConnected, isOnline)
+              : '${_subtitle(isConnected, isOnline)}\nRemote address: $remote',
+        ),
+        isThreeLine: remote != null,
         trailing: isBusy
             ? const SizedBox(
                 width: 20,
@@ -423,10 +521,16 @@ class _PairedTile extends StatelessWidget {
                     TextButton(onPressed: () => onDisconnect(), child: const Text('Disconnect'))
                   else
                     FilledButton.tonal(onPressed: onConnect, child: const Text('Connect')),
-                  IconButton(
-                    tooltip: 'Forget this PC',
-                    onPressed: onForget,
-                    icon: const Icon(Icons.delete_outline),
+                  PopupMenuButton<VoidCallback>(
+                    tooltip: 'More',
+                    onSelected: (action) => action(),
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: onEditRemoteAddress,
+                        child: Text(remote == null ? 'Add remote address…' : 'Remote address…'),
+                      ),
+                      PopupMenuItem(value: onForget, child: const Text('Forget this PC')),
+                    ],
                   ),
                 ],
               ),
@@ -438,7 +542,9 @@ class _PairedTile extends StatelessWidget {
     if (isConnected) {
       if (status.isLocked) return 'Connected · locked';
       if (status.isLoggedOut) return 'Connected · nobody signed in';
-      return 'Connected${status.userName != null ? ' · ${status.userName}' : ''}';
+
+      final route = status.viaRemoteAddress ? ' via remote address' : '';
+      return 'Connected$route${status.userName != null ? ' · ${status.userName}' : ''}';
     }
 
     if (isOnline) return 'Online · ${discovered!.address}';
@@ -459,10 +565,98 @@ class _PairedTile extends StatelessWidget {
   }
 }
 
+/// Edits a paired PC's remote address.
+///
+/// Pops a record holding the new address, or holding null to remove it. Popping nothing means
+/// the user cancelled, which is why the two cannot share a plain nullable result.
+class _RemoteAddressDialog extends StatefulWidget {
+  const _RemoteAddressDialog({required this.pc});
+
+  final PairedPc pc;
+
+  @override
+  State<_RemoteAddressDialog> createState() => _RemoteAddressDialogState();
+}
+
+class _RemoteAddressDialogState extends State<_RemoteAddressDialog> {
+  late final _controller = TextEditingController(text: widget.pc.remoteAddressLabel ?? '');
+
+  String? _problem;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pc = widget.pc;
+
+    return AlertDialog(
+      title: Text('Remote address for ${pc.deviceName}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Used when the PC cannot be found on this network, e.g. over a VPN such as Tailscale.',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            autocorrect: false,
+            enableSuggestions: false,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.done,
+            onChanged: (_) {
+              if (_problem != null) setState(() => _problem = null);
+            },
+            onSubmitted: (_) => _save(),
+            decoration: InputDecoration(
+              labelText: 'Host name or IP address',
+              hintText: '100.101.102.103',
+              helperText: 'Add :port only if it is not ${pc.lastPort}.',
+              errorText: _problem,
+              errorMaxLines: 2,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        if (pc.remoteAddress != null)
+          TextButton(
+            onPressed: () => Navigator.of(context).pop((remote: null)),
+            child: const Text('Remove'),
+          ),
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(onPressed: _save, child: const Text('Save')),
+      ],
+    );
+  }
+
+  void _save() {
+    final remote = RemoteAddress.tryParse(_controller.text);
+
+    if (remote == null) {
+      setState(() {
+        _problem = 'Enter a host name or IP address, optionally followed by :port.';
+      });
+      return;
+    }
+
+    Navigator.of(context).pop((remote: remote));
+  }
+}
+
 class _RepairNotice extends StatelessWidget {
-  const _RepairNotice({required this.message});
+  const _RepairNotice({required this.message, this.onPairAgain});
 
   final String message;
+
+  /// Starts pairing with the PC again. Null when there is no PC to pair with.
+  final VoidCallback? onPairAgain;
 
   @override
   Widget build(BuildContext context) {
@@ -475,16 +669,30 @@ class _RepairNotice extends StatelessWidget {
         color: scheme.errorContainer,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.gpp_maybe_outlined, color: scheme.onErrorContainer),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              message,
-              style: TextStyle(color: scheme.onErrorContainer),
-            ),
+          Row(
+            children: [
+              Icon(Icons.gpp_maybe_outlined, color: scheme.onErrorContainer),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  message,
+                  style: TextStyle(color: scheme.onErrorContainer),
+                ),
+              ),
+            ],
           ),
+          if (onPairAgain != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: onPairAgain,
+                icon: const Icon(Icons.add_link),
+                label: const Text('Pair again'),
+              ),
+            ),
         ],
       ),
     );
