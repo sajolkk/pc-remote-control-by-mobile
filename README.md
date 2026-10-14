@@ -25,8 +25,8 @@ From your phone, on the same Wi-Fi:
   two-finger scroll, a trackpad mode, and a keyboard with modifier keys and common shortcuts
 - list open windows and switch to, minimize, maximize, restore or close them
 - browse the PC's folders and drives, and open, create, rename, copy, move and delete files
-- reach the PC from outside your LAN through your own VPN (Tailscale, WireGuard, ZeroTier) by
-  giving the paired PC a remote address
+- reach the PC from any network (mobile data, another Wi-Fi) through your own VPN (Tailscale,
+  WireGuard, ZeroTier) by giving the paired PC a remote address ([how](#from-any-network))
 - see exactly which permissions the PC has granted this device
 
 ## What it deliberately will not do
@@ -85,10 +85,32 @@ unlocking needs you at the keyboard. The reasoning is in
 
 ## Getting started
 
-**Just want to use it?** Run [`artifacts/release/PC-Remote-Setup.exe`](artifacts/release/PC-Remote-Setup.exe)
-on the PC and install [`artifacts/release/Android/PC-Remote.apk`](artifacts/release/Android/PC-Remote.apk)
+**Just want to use it?** Run [`PC-Remote-Setup.exe`](https://media.githubusercontent.com/media/sajolkk/pc-remote-control-by-mobile/main/artifacts/release/PC-Remote-Setup.exe)
+on the PC and install [`PC-Remote.apk`](https://media.githubusercontent.com/media/sajolkk/pc-remote-control-by-mobile/main/artifacts/release/Android/PC-Remote.apk)
 on the phone. In the app, tap **Pair** next to your PC and click **Allow** on the PC when both
 screens show the same code. [Step by step](shared/docs/04-setup-and-connect.md).
+
+> The binaries are stored in Git LFS. "Download ZIP", raw links, and a `git clone` without
+> [Git LFS](https://git-lfs.com) give you a 133-byte pointer file instead of the program, and
+> Windows reports it as "This app can't run on your PC". Use the links above, or run
+> `git lfs install` then `git lfs pull` in your clone.
+
+### From any network
+
+Away from home, the phone reaches the PC through a VPN you run yourself; there is still no relay
+server and no port forwarding. With Tailscale:
+
+1. Pair the phone at home, on the same Wi-Fi as the PC (pairing needs you to click **Allow** on
+   the PC).
+2. Install [Tailscale](https://tailscale.com/download) on the PC and on the phone, and sign both
+   in to the same account.
+3. On the phone: **Devices → ⋮ next to the PC → Add remote address**, and enter the PC's
+   Tailscale address (the `100.x.y.z` one shown in Tailscale on the PC).
+
+The app tries the local network first and falls back to that address, on mobile data or any Wi-Fi.
+The installer already allows Tailscale's range through the firewall. For WireGuard or ZeroTier,
+add your VPN's subnet to `network.remoteAccessSubnets` and run the installer again.
+[Details and troubleshooting](shared/docs/04-setup-and-connect.md#using-it-away-from-home).
 
 To build from source you need the .NET 10 SDK, and Flutter for the mobile app.
 

@@ -325,13 +325,61 @@ The **Settings** tab on the phone shows what it currently has.
 
 ### Using it away from home
 
-PC-Remote has no relay server: the phone must be able to reach the PC's address. Outside your LAN
-that means a VPN you run yourself. Tailscale is the simplest: install it on the PC and the phone
-and sign both in. Then on the phone: **Devices → ⋮ next to the PC → Add remote address** and enter
-the PC's VPN address (for Tailscale, the `100.x.y.z` one). The app tries the LAN first and falls
-back to that address. The installer opens the control and streaming ports to `100.64.0.0/10`
-(Tailscale's range) on any network profile; for another VPN, set `network.remoteAccessSubnets` in
-`config.json` and run the installer again. This path has not been tested yet.
+PC-Remote has no relay server and needs no port forwarding: the phone must be able to reach the
+PC's address directly. Outside your LAN that means a VPN you run yourself, which puts the phone
+and the PC on one private network wherever they are: mobile data, a friend's Wi-Fi, the office.
+
+**Before you leave: pair at home.** Pairing needs someone to click **Allow** on the PC's screen,
+so do it once on the same Wi-Fi (Part 3). Pairings are kept, so this is a one-time step.
+
+**Set up Tailscale (the simplest option)**
+
+1. On the PC, install [Tailscale](https://tailscale.com/download/windows) and sign in.
+2. On the phone, install Tailscale from the Play Store or App Store and sign in **to the same
+   account**. Leave it switched on.
+3. Find the PC's Tailscale address: Tailscale's tray icon on the PC, or the machine list in the
+   phone's Tailscale app. It looks like `100.101.102.103`.
+4. In PC-Remote on the phone: **Devices → ⋮ next to the PC → Add remote address**, enter that
+   address and save.
+
+That's it. When the PC cannot be found on the current network, the app connects to the remote
+address instead and the PC's row shows "via remote address". Everything works over it: screen,
+mouse and keyboard, apps, windows, files and power.
+
+**Using another VPN (WireGuard, ZeroTier, your router's VPN)**
+
+The installer opens PC-Remote's ports to `100.64.0.0/10` (Tailscale's range) on every network
+profile, as separate rules ending in "- VPN". Other VPNs use other ranges, so tell the PC about
+yours in `%ProgramData%\PCRemote\config.json`, for example:
+
+```jsonc
+{ "agent": { "network": { "remoteAccessSubnets": ["100.64.0.0/10", "10.8.0.0/24"] } } }
+```
+
+then run `PC-Remote-Setup.exe` again (or `RemoteAgent.Service.exe --install`) so the rules are
+rebuilt. An empty list (`[]`) removes the VPN rules. These rules only decide who may *try* to
+connect: a device in the range still needs a paired certificate.
+
+**Ports involved**, if you manage the firewall yourself:
+
+| Port | Used for |
+|---|---|
+| TCP 47800 (up to 47815 if taken) | Control channel: commands, pairing, input |
+| UDP 47810–47850 | Live screen stream |
+| UDP 47801 | Discovery: LAN only, not used over a VPN |
+
+**If it does not connect from outside**
+
+- Check the PC is awake and Tailscale shows it as connected. A sleeping PC cannot be reached;
+  set **Settings → System → Power & sleep → Sleep** to Never if you need it any time.
+- In the phone's Tailscale app, check the PC is listed as connected. If it is not, the problem is
+  the VPN, not PC-Remote.
+- On the PC, check the "PC-Remote … - VPN" rules exist in **Windows Defender Firewall → Advanced
+  settings → Inbound Rules**. If they are missing, run the installer again.
+- Controls work but the screen stays on "Connecting video…": UDP 47810–47850 is being dropped on
+  the way. Check the "PC-Remote screen streaming (UDP) - VPN" rule.
+
+This path is newer than LAN use and has had less testing; reports are welcome.
 
 ### What Windows does not allow
 
