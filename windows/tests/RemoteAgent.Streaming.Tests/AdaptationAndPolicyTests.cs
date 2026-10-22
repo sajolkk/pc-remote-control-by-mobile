@@ -266,4 +266,15 @@ public sealed class AdaptationAndPolicyTests
     {
         Assert.Null(MediaSession.ComputeRttMs(0, 0));
     }
+
+    [Theory]
+    [InlineData(5, 5, 0, false)] // nothing new lost
+    [InlineData(6, 5, 0, true)] // one more packet lost since the last report
+    [InlineData(5, 5, 3, true)] // the report's own interval saw loss
+    [InlineData(0, 0, 0, false)]
+    public void LostPackets_AskForAKeyFrame(int lost, int previous, byte fraction, bool expected)
+    {
+        // Backs up a PLI that SIPSorcery dropped: without a keyframe the phone's picture freezes.
+        Assert.Equal(expected, MediaSession.LossNeedsKeyFrame(lost, previous, fraction));
+    }
 }

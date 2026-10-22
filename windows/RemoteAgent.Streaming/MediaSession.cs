@@ -102,6 +102,12 @@ public sealed class MediaSession : IAsyncDisposable
     private volatile string? _requestedMonitorId;
     private volatile bool _keyFrameRequested = true;
     private long _lastKeyFrameMs = long.MinValue / 2;
+
+    // Keyframes asked for by loss in receiver reports, which arrive about once a second. Spaced
+    // out, because under sustained loss a keyframe every report would add to the congestion.
+    private const int LossKeyFrameIntervalMs = 1500;
+    private int _lastPacketsLost;
+    private long _lastLossKeyFrameMs = long.MinValue / 2;
     private int _closed;
 
     // Telemetry, written by the pump thread and read when a report is assembled.
@@ -452,6 +458,20 @@ public sealed class MediaSession : IAsyncDisposable
         uint ourSsrc = _pc.VideoRtcpSession?.Ssrc ?? 0;
         ReceptionReportSample sample = reports.FirstOrDefault(r => r.SSRC == ourSsrc) ?? reports[0];
 
+        // A keyframe request can go missing: SIPSorcery keeps one feedback message per compound
+        // packet, so a PLI sharing one with REMB is lost, and the phone's picture then stays frozen
+        // until the next keyframe. Packets lost since the last report are the same signal from the
+        // receiver report itself, which is always there, so they ask for a keyframe as well.
+        long nowMs = NowMs;
+        if (LossNeedsKeyFrame(sample.PacketsLost, _lastPacketsLost, sample.FractionLost) &&
+            nowMs - _lastLossKeyFrameMs >= LossKeyFrameIntervalMs)
+        {
+            _keyFrameRequested = true;
+            _lastLossKeyFrameMs = nowMs;
+        }
+
+        _lastPacketsLost = sample.PacketsLost;
+
         double loss = sample.FractionLost / 256.0;
         double? rtt = ComputeRttMs(sample.LastSenderReportTimestamp, sample.DelaySinceLastSenderReport);
 
@@ -460,6 +480,12 @@ public sealed class MediaSession : IAsyncDisposable
             _controller?.OnReceiverReport(NowMs, loss, rtt);
         }
     }
+
+    /// <summary>
+    /// Whether a receiver report says packets were lost since the previous one.
+    /// </summary>
+    internal static bool LossNeedsKeyFrame(int packetsLost, int previousPacketsLost, byte fractionLost) =>
+        fractionLost > 0 || packetsLost > previousPacketsLost;
 
     /// <summary>
     /// RTT from a reception report, per RFC 3550 §6.4.1: now − LSR − DLSR, in units of 1/65536 s.

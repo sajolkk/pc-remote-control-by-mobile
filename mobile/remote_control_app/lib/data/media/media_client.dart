@@ -128,6 +128,72 @@ String _normalizeAddress(String address) {
   return value;
 }
 
+/// Removes the congestion-control feedback (`goog-remb`, `transport-cc` and the transport-wide
+/// sequence number extension) from this phone's offer, so the PC's answer does not take it up.
+///
+/// The PC's RTCP stack keeps one feedback message per compound packet. libwebrtc puts REMB in the
+/// same compound as a keyframe request (PLI), so the PLI was overwritten and never honoured: after
+/// any lost packet the picture stayed frozen — while input still worked — until the PC happened
+/// to send a keyframe on its own. The PC adapts from receiver reports, not from REMB or
+/// transport-cc, so nothing is lost by not asking for them.
+String withoutCongestionFeedback(String sdp) {
+  final lines = sdp.split('\n');
+
+  bool drop(String line) {
+    final text = line.trimRight();
+    if (text.startsWith('a=rtcp-fb:')) {
+      return text.endsWith(' goog-remb') || text.endsWith(' transport-cc');
+    }
+    return text.startsWith('a=extmap:') && text.contains('transport-wide-cc');
+  }
+
+  return lines.where((line) => !drop(line)).join('\n');
+}
+
+/// Notices a picture that has stopped while the PC is still sending: the decoder is waiting for a
+/// keyframe that is not coming. Restarting the stream always starts with one.
+class FreezeDetector {
+  FreezeDetector({
+    this.stalledFor = const Duration(seconds: 3),
+    this.minRestartGap = const Duration(seconds: 8),
+  });
+
+  /// How long the picture may stand still while frames arrive before it counts as frozen.
+  final Duration stalledFor;
+
+  /// Restarts are no closer together than this, so a PC that cannot be decoded at all is not
+  /// restarted in a tight loop.
+  final Duration minRestartGap;
+
+  DateTime? _stalledSince;
+  DateTime? _lastRestart;
+
+  /// One stats sample. [sentFps] is what the PC reports sending, [shownFps] what this phone
+  /// decoded. True when the stream should be restarted now.
+  bool sample(DateTime now, {required double? sentFps, required double? shownFps}) {
+    // A still screen sends next to nothing, and showing nothing then is correct.
+    final stalled = sentFps != null && sentFps >= 2 && shownFps != null && shownFps < 0.5;
+
+    if (!stalled) {
+      _stalledSince = null;
+      return false;
+    }
+
+    final since = _stalledSince ??= now;
+    if (now.difference(since) < stalledFor) return false;
+
+    final last = _lastRestart;
+    if (last != null && now.difference(last) < minRestartGap) return false;
+
+    _lastRestart = now;
+    _stalledSince = null;
+    return true;
+  }
+
+  /// Forgets a stall in progress, e.g. when the stream is restarted for another reason.
+  void reset() => _stalledSince = null;
+}
+
 /// The phone's half of the screen stream.
 ///
 /// **Signalling runs over the control channel**, which is already mutually authenticated and
@@ -162,6 +228,10 @@ class MediaClient extends ValueNotifier<MediaViewState> {
   int? _lastFramesDecoded;
   DateTime? _lastStatsAt;
 
+  // For restarting a frozen picture with what the user last chose.
+  final _freeze = FreezeDetector();
+  QualityPreset? _quality;
+
   /// Must be called once before [start].
   Future<void> initialize() async {
     if (_rendererReady) return;
@@ -171,6 +241,9 @@ class MediaClient extends ValueNotifier<MediaViewState> {
 
   /// Starts (or restarts) the stream.
   Future<void> start({String? monitorId, QualityPreset? quality}) async {
+    _quality = quality;
+    _freeze.reset();
+
     await initialize();
     await _close(notifyPc: true);
 
@@ -243,7 +316,7 @@ class MediaClient extends ValueNotifier<MediaViewState> {
       if (generation != _generation) return;
 
       final response = await _connection.send(Commands.mediaOffer, args: {
-        'sdp': local?.sdp ?? offer.sdp,
+        'sdp': withoutCongestionFeedback(local?.sdp ?? offer.sdp ?? ''),
         if (monitorId != null) 'monitorId': monitorId,
         if (quality != null) 'quality': quality.toJson(),
       });
@@ -307,6 +380,7 @@ class MediaClient extends ValueNotifier<MediaViewState> {
     });
 
     if (response == null) return 'Not connected to the PC.';
+    if (response.ok) _quality = preset;
     return response.ok ? null : _describeError(response.error);
   }
 
@@ -403,6 +477,15 @@ class MediaClient extends ValueNotifier<MediaViewState> {
           jitterMs: jitter == null ? null : jitter * 1000,
           framesDropped: (values['framesDropped'] as num?)?.toInt(),
         ));
+
+        final frozen = value.phase == MediaPhase.streaming &&
+            _freeze.sample(now, sentFps: value.quality?.fps, shownFps: fps);
+
+        if (frozen) {
+          // The PC is sending and nothing is being shown. A new stream starts with a keyframe.
+          start(monitorId: value.monitorId, quality: _quality).ignore();
+          return;
+        }
       }
     } on Object {
       // Stats are best-effort; a failed sample leaves the last values on screen.
