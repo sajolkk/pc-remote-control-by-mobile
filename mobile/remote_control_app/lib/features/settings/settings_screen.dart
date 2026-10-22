@@ -15,7 +15,7 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final identity = ref.watch(identityProvider);
-    final status = ref.watch(connectionProvider).status;
+    final status = ref.watch(connectionStatusProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -252,7 +252,7 @@ class SettingsScreen extends ConsumerWidget {
 
     if (confirmed != true) return;
 
-    await ref.read(connectionProvider).disconnect();
+    await ref.read(connectionManagerProvider).disconnectAll();
     await ref.read(pairedStoreProvider).clear();
     await ref.read(identityStoreProvider).reset();
 

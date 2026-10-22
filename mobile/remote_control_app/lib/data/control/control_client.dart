@@ -162,6 +162,7 @@ class ControlClient {
 
     socket.setOption(SocketOption.tcpNoDelay, true);
     tlsDescription = socket.selectedProtocol ?? 'TLS';
+    peerAddress = socket.remoteAddress.address;
 
     _socket = socket;
     _closed = false;
@@ -177,6 +178,13 @@ class ControlClient {
 
   /// The fingerprint the PC presented on this connection.
   String? serverFingerprint;
+
+  /// The PC's IP address on this connection — resolved, so a host name such as a MagicDNS one
+  /// arrives here as the address it stood for.
+  ///
+  /// The PC only sends the screen to the address this connection came from, so the stream has to
+  /// take the same route: see `MediaClient`.
+  String? peerAddress;
 
   /// Sends a command and waits for its response.
   Future<ResponseEnvelope> send(

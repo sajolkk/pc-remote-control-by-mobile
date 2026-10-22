@@ -85,6 +85,49 @@ class MediaViewState {
       );
 }
 
+/// Keeps only the PC's candidates on [host], the address the control connection reached it at.
+/// Returns [sdp] unchanged when none of them is on it, rather than leaving nothing to try.
+///
+/// The PC sends the screen only to the address that authenticated, and closes a stream that
+/// connects anywhere else. A phone and PC that share a Wi-Fi but are connected over a VPN such as
+/// Tailscale have two routes to each other, and ICE, left to itself, prefers the LAN one — which
+/// the PC then refuses. Checking only the PC's address on the control connection's route makes
+/// ICE take that route, whichever it is.
+String restrictCandidatesToHost(String sdp, String host) {
+  final wanted = _normalizeAddress(host);
+  final lines = sdp.split('\n');
+  final kept = <String>[];
+  var matched = 0;
+
+  for (final line in lines) {
+    final text = line.trimRight();
+
+    if (text.startsWith('a=candidate:')) {
+      // foundation component transport priority address port "typ" type ...
+      final fields = text.split(' ');
+      if (fields.length < 5 || _normalizeAddress(fields[4]) != wanted) continue;
+      matched++;
+    }
+
+    kept.add(line);
+  }
+
+  return matched == 0 ? sdp : kept.join('\n');
+}
+
+String _normalizeAddress(String address) {
+  var value = address.trim().toLowerCase();
+  if (value.startsWith('[') && value.endsWith(']')) value = value.substring(1, value.length - 1);
+
+  final zone = value.indexOf('%');
+  if (zone >= 0) value = value.substring(0, zone);
+
+  // An IPv4 address seen through an IPv6 socket.
+  if (value.startsWith('::ffff:') && value.contains('.')) value = value.substring(7);
+
+  return value;
+}
+
 /// The phone's half of the screen stream.
 ///
 /// **Signalling runs over the control channel**, which is already mutually authenticated and
@@ -219,7 +262,10 @@ class MediaClient extends ValueNotifier<MediaViewState> {
 
       final data = response.map;
       final sessionId = data['sessionId'] as String? ?? '';
-      final answer = data['sdp'] as String? ?? '';
+      final peer = _connection.peerAddress;
+      final answer = peer == null
+          ? data['sdp'] as String? ?? ''
+          : restrictCandidatesToHost(data['sdp'] as String? ?? '', peer);
 
       await pc.setRemoteDescription(RTCSessionDescription(answer, 'answer'));
 

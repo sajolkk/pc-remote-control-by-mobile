@@ -2,10 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
-import '../../app/providers.dart';
 import '../../data/input/input_sender.dart';
 import '../../data/media/media_client.dart';
 import '../../domain/connection_controller.dart';
@@ -32,17 +30,23 @@ import 'remote_keyboard.dart';
 /// back, and a small label always says which it is. A PC too old to take input shows no control at
 /// all; a device without the permission is told how to get it and stays view-only.
 ///
+/// **One PC per screen.** Opened from the Screen tab's list for the PC chosen there, so several
+/// PCs can be connected while one is watched.
+///
 /// **Nothing stays held.** Whenever control ends — switched off, tab left, app backgrounded,
 /// stream stopped or paused, permission withdrawn — the PC is told to release every key and button
 /// this phone was holding.
-class RemoteDesktopScreen extends ConsumerStatefulWidget {
-  const RemoteDesktopScreen({super.key});
+class RemoteDesktopScreen extends StatefulWidget {
+  const RemoteDesktopScreen({super.key, required this.connection});
+
+  /// The connection to the PC whose screen this shows.
+  final ConnectionController connection;
 
   @override
-  ConsumerState<RemoteDesktopScreen> createState() => _RemoteDesktopScreenState();
+  State<RemoteDesktopScreen> createState() => _RemoteDesktopScreenState();
 }
 
-class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with WidgetsBindingObserver {
+class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsBindingObserver {
   late final MediaClient _media;
   late final ConnectionController _connection;
   late final InputSender _input;
@@ -64,13 +68,14 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
   bool _wasControlling = false;
   bool _wasLive = false;
   bool _permissionNoticeDismissed = false;
+  bool _panMode = false;
   DateTime? _lastBackAt;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _connection = ref.read(connectionProvider);
+    _connection = widget.connection..addListener(_onConnectionChanged);
     _media = MediaClient(_connection)..addListener(_onMediaChanged);
     _input = InputSender(_connection.send, onFault: (fault) => _snack(fault.message));
     _keyboard = RemoteKeyboardController(_input);
@@ -80,6 +85,7 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _connection.removeListener(_onConnectionChanged);
     _exitFullscreen();
 
     // Before the stream goes: the PC must not be left holding a key because the tab was left
@@ -90,6 +96,10 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
     _media.dispose();
     _transform.dispose();
     super.dispose();
+  }
+
+  void _onConnectionChanged() {
+    if (mounted) setState(() {});
   }
 
   /// The stream stopping or pausing ends control: there is nothing left to aim at.
@@ -124,15 +134,14 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
   Future<void> _startIfPossible() async {
     if (!mounted || !_wantStream || _media.value.isActive) return;
 
-    final status = ref.read(connectionProvider).status;
-    if (!_canStream(status)) return;
+    if (!_canStream(_connection.status)) return;
 
     await _loadMonitors();
     await _media.start(monitorId: _media.value.monitorId, quality: _preset);
   }
 
   Future<void> _loadMonitors() async {
-    final response = await ref.read(connectionProvider).send(Commands.screenMonitorList);
+    final response = await _connection.send(Commands.screenMonitorList);
     if (!mounted || response == null || !response.ok) return;
 
     setState(() => _monitors = MonitorList.fromJson(response.map).monitors);
@@ -140,7 +149,7 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
 
   @override
   Widget build(BuildContext context) {
-    final status = ref.watch(connectionProvider).status;
+    final status = _connection.status;
 
     // The control connection dropping takes the stream with it; the PC ends its side too. When
     // the connection comes back, pick up where the user left off.
@@ -176,7 +185,10 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
 
     final blocker = _blocker(status);
     if (blocker != null) {
-      return _Explanation(icon: blocker.$1, title: blocker.$2, detail: blocker.$3);
+      return Scaffold(
+        appBar: AppBar(title: Text(_pcName)),
+        body: _Explanation(icon: blocker.$1, title: blocker.$2, detail: blocker.$3),
+      );
     }
 
     final mode = !controlOffered
@@ -192,8 +204,9 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
     return PopScope(
       // A drag that starts at the edge of the phone's screen is also Android's back gesture, and
       // the PC's own edges (window borders, the first column of text) sit exactly there. Leaving
-      // the app in the middle of dragging something on the PC is never what was meant, so while
-      // controlling, back only closes the keyboard, and leaving takes a second, deliberate press.
+      // the screen in the middle of dragging something on the PC is never what was meant, so
+      // while controlling, back only closes the keyboard, and leaving takes a second, deliberate
+      // press.
       canPop: !controlling,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _onBackWhileControlling();
@@ -230,20 +243,37 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
     final now = DateTime.now();
     final last = _lastBackAt;
     if (last != null && now.difference(last) < const Duration(seconds: 2)) {
-      SystemNavigator.pop();
+      _leave();
       return;
     }
 
     _lastBackAt = now;
-    _snack('Press back again to leave the app.');
+    _snack('Press back again to close the screen.');
+  }
+
+  String get _pcName => _connection.status.pc?.deviceName ?? 'PC';
+
+  /// Back to the list of PCs. The stream stops as this screen goes.
+  void _leave() {
+    _input.releaseAll();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  void _togglePanMode() {
+    setState(() => _panMode = !_panMode);
+    _snack(_panMode
+        ? 'Move: drag to move the screen left, right, up and down. Pinch to zoom. '
+            'Tap the tool again to control the PC.'
+        : 'Move off. Touches control the PC again.');
   }
 
   /// The picture and everything drawn over it.
   Widget _stage(MediaViewState state, _ControlMode mode, {required bool canPoint, required bool canType}) {
     final controlling = mode.isControlling;
 
-    // Touches only reach the PC while there is a live picture to aim at.
-    final pointing = controlling && canPoint && state.phase == MediaPhase.streaming;
+    // Touches only reach the PC while there is a live picture to aim at, and not while the move
+    // tool has them.
+    final pointing = controlling && canPoint && state.phase == MediaPhase.streaming && !_panMode;
 
     return Stack(
       children: [
@@ -261,6 +291,21 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
               _startIfPossible();
             },
           ),
+        Positioned(
+          top: 4,
+          left: 4,
+          child: Material(
+            color: Colors.black54,
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: IconButton(
+              tooltip: 'Back to the list of PCs',
+              icon: const Icon(Icons.arrow_back, color: Colors.white),
+              visualDensity: VisualDensity.compact,
+              onPressed: _leave,
+            ),
+          ),
+        ),
         _TopBar(
           state: state,
           monitors: _monitors,
@@ -285,6 +330,13 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
           onToggleKeyboard: _keyboardOpen ? _closeKeyboard : _openKeyboard,
           onResetZoom: () => _transform.value = Matrix4.identity(),
           onExplainPermission: _explainPermission,
+          panMode: _panMode,
+          onTogglePanMode: _togglePanMode,
+        ),
+        Positioned(
+          top: 50,
+          left: 8,
+          child: IgnorePointer(child: _PcLabel(name: _pcName, moving: _panMode)),
         ),
         // Drawn over the picture but never in the way of it: a touch on a label is a touch on
         // the PC underneath.
@@ -310,6 +362,7 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
       transform: _transform,
       sender: _input,
       enabled: pointing,
+      panMode: _panMode,
       style: _pointerStyle,
       videoSize: _videoSize,
       monitorId: state.monitorId,
@@ -443,6 +496,8 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
         'Two-finger drag: scroll the PC',
         'Pinch: zoom the view; keep the fingers down and drag to move it',
         'Three-finger drag: move the zoomed view',
+        'Move tool (the arrows on the toolbar): one finger moves the screen left, right, up and '
+            'down, without touching the PC',
         'Ctrl, Alt, Shift and Win on the keys bar apply to the next key, character or click',
       ],
     ),
@@ -500,7 +555,7 @@ class _RemoteDesktopScreenState extends ConsumerState<RemoteDesktopScreen> with 
   }
 
   Future<void> _screenshot() async {
-    final response = await ref.read(connectionProvider).send(Commands.screenScreenshot, args: {
+    final response = await _connection.send(Commands.screenScreenshot, args: {
       if (_media.value.monitorId != null) 'monitorId': _media.value.monitorId,
       'maxWidth': 1920,
     });
@@ -642,6 +697,46 @@ class _ModeBadge extends StatelessWidget {
   }
 }
 
+/// Which PC this is, and whether the move tool has the touches.
+class _PcLabel extends StatelessWidget {
+  const _PcLabel({required this.name, required this.moving});
+
+  final String name;
+  final bool moving;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 180),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                moving ? Icons.open_with : Icons.desktop_windows_outlined,
+                size: 12,
+                color: moving ? Colors.greenAccent : Colors.white70,
+              ),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  moving ? '$name · moving the screen' : name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Why this device can look but not touch, in the same words and shape as the System tab's
 /// notice about power controls.
 class _PermissionNotice extends StatelessWidget {
@@ -723,6 +818,8 @@ class _TopBar extends StatelessWidget {
     required this.onToggleKeyboard,
     required this.onResetZoom,
     required this.onExplainPermission,
+    required this.panMode,
+    required this.onTogglePanMode,
   });
 
   final MediaViewState state;
@@ -749,6 +846,10 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onResetZoom;
   final VoidCallback onExplainPermission;
 
+  /// Whether the move tool is on: touches move the picture instead of controlling the PC.
+  final bool panMode;
+  final VoidCallback onTogglePanMode;
+
   @override
   Widget build(BuildContext context) {
     final live = state.isActive;
@@ -756,10 +857,11 @@ class _TopBar extends StatelessWidget {
     // Spans the width so that on a narrow phone the buttons scroll instead of running off the
     // edge; the alignment keeps the pill hugging the right as before, and the empty part of the
     // strip lets touches through to the picture.
+    // Starts clear of the back button in the top-left corner.
     return Positioned(
       top: 4,
       right: 4,
-      left: 4,
+      left: 52,
       child: Align(
         alignment: Alignment.topRight,
         child: Material(
@@ -847,6 +949,13 @@ class _TopBar extends StatelessWidget {
             ),
           ],
         ),
+      // The move tool: one finger moves the picture around, for reaching the parts of a zoomed
+      // screen that are off the phone's.
+      IconButton(
+        tooltip: panMode ? 'Stop moving the screen' : 'Move the screen',
+        icon: Icon(Icons.open_with, color: panMode ? Colors.greenAccent : Colors.white),
+        onPressed: onTogglePanMode,
+      ),
       if (showKeyboardButton)
         IconButton(
           tooltip: keyboardOpen ? 'Close the keyboard' : 'Type on the PC',
@@ -855,7 +964,7 @@ class _TopBar extends StatelessWidget {
         ),
       // With control on a double tap is a double click, so resetting the zoom needs a
       // button — shown only while there is a zoom to reset.
-      if (mode.isControlling)
+      if (mode.isControlling || panMode)
         ValueListenableBuilder<Matrix4>(
           valueListenable: transform,
           builder: (context, matrix, _) => ViewTransform.fromMatrix(matrix).isZoomed

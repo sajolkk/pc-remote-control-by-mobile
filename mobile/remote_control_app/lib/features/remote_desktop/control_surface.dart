@@ -11,6 +11,10 @@ import 'pointer_mapping.dart';
 /// reset. With control on, one finger belongs to the PC, so the viewer's own gestures are switched
 /// off and [ControlGestures] drives both the PC and the zoom (see its rules).
 ///
+/// With [panMode] on, touches move the picture instead, whatever control would otherwise do: one
+/// finger drags it left, right, up and down, two pinch the zoom. Turning it on with nothing zoomed
+/// zooms in first, so there is somewhere to move to.
+///
 /// Either way, the zoom survives the viewport changing size — rotation, full screen, the keyboard
 /// opening — with whatever was in the middle still in the middle.
 class ControlSurface extends StatefulWidget {
@@ -24,6 +28,7 @@ class ControlSurface extends StatefulWidget {
     required this.monitorId,
     required this.child,
     this.takeModifiers,
+    this.panMode = false,
   });
 
   /// The zoom and pan, shared with the screen so it can reset them.
@@ -33,6 +38,12 @@ class ControlSurface extends StatefulWidget {
 
   /// Whether touches control the PC. When false the surface only views.
   final bool enabled;
+
+  /// Whether touches move and zoom the picture, overriding [enabled] while on.
+  final bool panMode;
+
+  /// How far turning on [panMode] zooms in when nothing is zoomed yet.
+  static const panModeZoom = 2.0;
 
   final PointerStyle style;
 
@@ -79,9 +90,21 @@ class _ControlSurfaceState extends State<ControlSurface> {
 
     // A gesture must not straddle a change of rules: a drag begun as a click-drag cannot finish
     // as a cursor move, and one begun with control on must not leave the button down.
-    if (oldWidget.enabled != widget.enabled || oldWidget.style != widget.style) {
+    if (oldWidget.enabled != widget.enabled ||
+        oldWidget.panMode != widget.panMode ||
+        oldWidget.style != widget.style) {
       _gestures.reset();
       _gestures.style = widget.style;
+    }
+
+    if (widget.panMode && !oldWidget.panMode && !_view.isZoomed && !_viewport.isEmpty) {
+      // Deferred: the controller notifies the viewer, which may not be rebuilt during a build.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _view.isZoomed) return;
+
+        final center = _viewport.center(Offset.zero);
+        _setView(_view.zoomBy(ControlSurface.panModeZoom, center, center, _viewport));
+      });
     }
   }
 
@@ -123,7 +146,8 @@ class _ControlSurfaceState extends State<ControlSurface> {
 
   @override
   Widget build(BuildContext context) {
-    final enabled = widget.enabled;
+    // The move tool takes every touch for the picture, so none reach the PC while it is on.
+    final enabled = widget.enabled && !widget.panMode;
 
     return LayoutBuilder(
       builder: (context, constraints) {

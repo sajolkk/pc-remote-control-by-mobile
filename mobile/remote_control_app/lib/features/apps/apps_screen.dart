@@ -72,7 +72,7 @@ class _AppsScreenState extends ConsumerState<AppsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final status = ref.watch(connectionProvider).status;
+    final status = ref.watch(connectionStatusProvider);
 
     if (!status.isConnected) {
       return const NotConnectedView();

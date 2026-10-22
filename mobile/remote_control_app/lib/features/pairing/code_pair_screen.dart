@@ -114,7 +114,7 @@ class _CodePairScreenState extends ConsumerState<CodePairScreen> {
       });
 
       // Straight on to a live connection, without a second tap.
-      ref.read(connectionProvider).connect(pc).ignore();
+      ref.read(connectionManagerProvider).connect(pc).ignore();
       await Future<void>.delayed(const Duration(milliseconds: 1200));
       if (mounted) Navigator.of(context).pop(true);
     } on ControlChannelException catch (error) {

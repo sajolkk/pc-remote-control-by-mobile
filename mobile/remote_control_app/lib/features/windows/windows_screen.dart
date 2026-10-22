@@ -26,7 +26,7 @@ class _WindowsScreenState extends ConsumerState<WindowsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final status = ref.watch(connectionProvider).status;
+    final status = ref.watch(connectionStatusProvider);
 
     // Loaded the first time the feature is actually usable, and again after it has been away:
     // a permission granted on the PC while this screen is open should fill the list without

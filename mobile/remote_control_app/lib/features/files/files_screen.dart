@@ -64,7 +64,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final status = ref.watch(connectionProvider).status;
+    final status = ref.watch(connectionStatusProvider);
 
     // Loaded the first time the feature is actually usable, and again after it has been away.
     final available = status.isConnected &&

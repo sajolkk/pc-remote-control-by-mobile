@@ -215,8 +215,22 @@ class PairedPcStore {
             );
 
   static const _key = 'paired.pcs';
+  static const _autoConnectKey = 'paired.autoConnect';
 
   final FlutterSecureStorage _storage;
+
+  /// The tail of the queue every read-modify-write goes through.
+  ///
+  /// Several PCs can be connected at once, and each connection saves its PC's record as it comes
+  /// up. Without the queue two of those saves read the same list and the second write drops the
+  /// first — which, if the first was a pairing, loses a PC.
+  Future<void> _queue = Future.value();
+
+  Future<T> _serialized<T>(Future<T> Function() action) {
+    final result = _queue.then((_) => action());
+    _queue = result.then<void>((_) {}, onError: (_) {});
+    return result;
+  }
 
   Future<List<PairedPc>> getAll() async {
     final raw = await _storage.read(key: _key);
@@ -250,7 +264,7 @@ class PairedPcStore {
   /// A record arriving without a remote address keeps the one already stored. Pairing again
   /// builds a fresh record that knows nothing about it, and that must not throw away what the
   /// user typed. Removing the address is [setRemoteAddress]'s job.
-  Future<void> save(PairedPc pc) async {
+  Future<void> save(PairedPc pc) => _serialized(() async {
     final all = await getAll();
 
     var toSave = pc;
@@ -267,11 +281,12 @@ class PairedPcStore {
     await _write(
       all.where((existing) => existing.deviceId != pc.deviceId).toList()..add(toSave),
     );
-  }
+  });
 
   /// Sets, replaces or (with null) clears a PC's remote address, leaving everything else as
   /// stored. Returns the updated record, or null when that PC is not paired.
-  Future<PairedPc?> setRemoteAddress(String deviceId, RemoteAddress? remote) async {
+  Future<PairedPc?> setRemoteAddress(String deviceId, RemoteAddress? remote) =>
+      _serialized(() async {
     final all = await getAll();
 
     PairedPc? updated;
@@ -288,14 +303,50 @@ class PairedPcStore {
 
     if (updated != null) await _write(next);
     return updated;
-  }
+  });
 
-  Future<void> remove(String deviceId) async {
+  Future<void> remove(String deviceId) => _serialized(() async {
     final all = (await getAll()).where((pc) => pc.deviceId != deviceId).toList();
     await _write(all);
+    await _writeAutoConnect((await _readAutoConnect() ?? const {})..remove(deviceId));
+  });
+
+  Future<void> clear() => _serialized(() async {
+    await _storage.delete(key: _key);
+    await _storage.delete(key: _autoConnectKey);
+  });
+
+  /// The PCs to connect to when the app starts: the ones the user left connected.
+  ///
+  /// Null when nothing has been recorded yet — an install from before several PCs could be
+  /// connected at once — so the caller can fall back to the PC used most recently.
+  Future<Set<String>?> getAutoConnect() => _serialized(_readAutoConnect);
+
+  /// Records whether [deviceId] should be connected when the app starts.
+  Future<void> setAutoConnect(String deviceId, bool enabled) => _serialized(() async {
+    final ids = await _readAutoConnect() ?? <String>{};
+    final changed = enabled ? ids.add(deviceId) : ids.remove(deviceId);
+
+    // Written even when unchanged the first time, so "never recorded" becomes "recorded".
+    if (changed || !(await _storage.containsKey(key: _autoConnectKey))) {
+      await _writeAutoConnect(ids);
+    }
+  });
+
+  Future<Set<String>?> _readAutoConnect() async {
+    final raw = await _storage.read(key: _autoConnectKey);
+    if (raw == null) return null;
+
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is List ? decoded.whereType<String>().toSet() : <String>{};
+    } on Object {
+      return <String>{};
+    }
   }
 
-  Future<void> clear() => _storage.delete(key: _key);
+  Future<void> _writeAutoConnect(Set<String> ids) =>
+      _storage.write(key: _autoConnectKey, value: jsonEncode(ids.toList()));
 
   Future<void> _write(List<PairedPc> devices) => _storage.write(
         key: _key,

@@ -6,9 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../data/storage/paired_pc_store.dart';
 import '../../domain/connection_controller.dart';
+import '../../domain/connection_manager.dart';
 import '../../protocol/protocol.dart';
 import '../pairing/code_pair_screen.dart';
 import '../pairing/pair_screen.dart';
+import '../remote_desktop/screen_picker_screen.dart';
 
 /// Lists paired PCs and PCs found on the network.
 class DevicesScreen extends ConsumerWidget {
@@ -18,7 +20,11 @@ class DevicesScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final paired = ref.watch(pairedPcsProvider);
     final discovered = ref.watch(discoveredPcsProvider);
-    final connection = ref.watch(connectionProvider);
+    final manager = ref.watch(connectionManagerProvider);
+
+    // A PC that has dropped this device. Shown at the top, because it needs the user to act.
+    final repair = manager.statuses.where((status) => status.requiresRepair).firstOrNull;
+    final needsPairing = _needsPairing(manager);
 
     return Scaffold(
       appBar: AppBar(
@@ -47,12 +53,10 @@ class DevicesScreen extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.only(bottom: 88),
           children: [
-            if (connection.status.requiresRepair)
+            if (repair != null)
               _RepairNotice(
-                message: connection.status.message ?? 'This device needs to pair again.',
-                onPairAgain: connection.status.pc == null
-                    ? null
-                    : () => _pairAgain(context, ref, connection.status.pc!),
+                message: repair.message ?? 'This device needs to pair again.',
+                onPairAgain: repair.pc == null ? null : () => _pairAgain(context, ref, repair.pc!),
               ),
 
             _SectionHeader(
@@ -77,9 +81,10 @@ class DevicesScreen extends ConsumerWidget {
                           _PairedTile(
                             pc: pc,
                             discovered: _findBeacon(discovered.valueOrNull, pc.deviceId),
-                            status: connection.status,
-                            onConnect: () => connection.connect(pc),
-                            onDisconnect: connection.disconnect,
+                            status: manager.statusOf(pc.deviceId),
+                            onConnect: () => manager.connect(pc),
+                            onDisconnect: () => manager.disconnect(pc.deviceId),
+                            onOpenScreen: () => openScreen(context, ref, pc),
                             onEditRemoteAddress: () => _editRemoteAddress(context, ref, pc),
                             onForget: () => _forget(context, ref, pc),
                           ),
@@ -105,7 +110,7 @@ class DevicesScreen extends ConsumerWidget {
                 // afresh, and this list is where pairing starts.
                 final pairedIds = (paired.valueOrNull ?? const <PairedPc>[])
                     .map((pc) => pc.deviceId)
-                    .where((id) => id != _needsPairing(connection.status))
+                    .where((id) => !needsPairing.contains(id))
                     .toSet();
 
                 final unpaired =
@@ -219,10 +224,10 @@ class DevicesScreen extends ConsumerWidget {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('Searching for PCs…')));
 
-    final needsPairing = _needsPairing(ref.read(connectionProvider).status);
+    final needsPairing = _needsPairing(ref.read(connectionManagerProvider));
     final pairedIds = (ref.read(pairedPcsProvider).valueOrNull ?? const <PairedPc>[])
         .map((pc) => pc.deviceId)
-        .where((id) => id != needsPairing)
+        .where((id) => !needsPairing.contains(id))
         .toSet();
 
     final found = <String, DiscoveryBeacon>{};
@@ -256,9 +261,11 @@ class DevicesScreen extends ConsumerWidget {
     );
   }
 
-  /// The id of the PC that refused this device as unpaired, if that is the current state.
-  static String? _needsPairing(ConnectionStatus status) =>
-      status.requiresRepair ? status.pc?.deviceId : null;
+  /// The ids of the PCs that refused this device as unpaired.
+  static Set<String> _needsPairing(ConnectionManager manager) => {
+        for (final status in manager.statuses)
+          if (status.requiresRepair && status.pc != null) status.pc!.deviceId,
+      };
 
   /// Pairs again with a PC that no longer recognises this device: straight to the code screen
   /// when the PC answers on this network, otherwise by its address.
@@ -407,8 +414,8 @@ class DevicesScreen extends ConsumerWidget {
 
     // If the app is in the middle of failing to reach this very PC, the new address is most
     // likely the fix, so try it now rather than at the end of a back-off.
-    final connection = ref.read(connectionProvider);
-    final status = connection.status;
+    final manager = ref.read(connectionManagerProvider);
+    final status = manager.statusOf(pc.deviceId);
 
     final isSearching = status.pc?.deviceId == pc.deviceId &&
         !status.isConnected &&
@@ -416,7 +423,7 @@ class DevicesScreen extends ConsumerWidget {
         status.phase != ConnectionPhase.failed;
 
     if (isSearching && result.remote != null) {
-      connection.connect(updated).ignore();
+      manager.connect(updated, select: false).ignore();
     }
   }
 
@@ -445,11 +452,7 @@ class DevicesScreen extends ConsumerWidget {
 
     if (confirmed != true) return;
 
-    final connection = ref.read(connectionProvider);
-    if (connection.status.pc?.deviceId == pc.deviceId) {
-      await connection.disconnect();
-    }
-
+    await ref.read(connectionManagerProvider).forget(pc.deviceId);
     await ref.read(pairedStoreProvider).remove(pc.deviceId);
     ref.invalidate(pairedPcsProvider);
   }
@@ -462,15 +465,19 @@ class _PairedTile extends StatelessWidget {
     required this.status,
     required this.onConnect,
     required this.onDisconnect,
+    required this.onOpenScreen,
     required this.onEditRemoteAddress,
     required this.onForget,
   });
 
   final PairedPc pc;
   final DiscoveryBeacon? discovered;
+
+  /// This PC's own connection status.
   final ConnectionStatus status;
   final VoidCallback onConnect;
   final Future<void> Function() onDisconnect;
+  final VoidCallback onOpenScreen;
   final VoidCallback onEditRemoteAddress;
   final VoidCallback onForget;
 
@@ -518,13 +525,22 @@ class _PairedTile extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (isConnected)
-                    TextButton(onPressed: () => onDisconnect(), child: const Text('Disconnect'))
+                    FilledButton.tonalIcon(
+                      onPressed: onOpenScreen,
+                      icon: const Icon(Icons.cast_connected, size: 18),
+                      label: const Text('Screen'),
+                    )
                   else
                     FilledButton.tonal(onPressed: onConnect, child: const Text('Connect')),
                   PopupMenuButton<VoidCallback>(
                     tooltip: 'More',
                     onSelected: (action) => action(),
                     itemBuilder: (context) => [
+                      if (isConnected)
+                        PopupMenuItem(
+                          value: () => onDisconnect(),
+                          child: const Text('Disconnect'),
+                        ),
                       PopupMenuItem(
                         value: onEditRemoteAddress,
                         child: Text(remote == null ? 'Add remote address…' : 'Remote address…'),

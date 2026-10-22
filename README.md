@@ -23,6 +23,9 @@ From your phone, on the same Wi-Fi:
   with hardware H.264 encoding where the GPU has it and a software fallback where it does not
 - control the PC from the Screen tab: tap to click, double-tap, long-press for right click, drag,
   two-finger scroll, a trackpad mode, and a keyboard with modifier keys and common shortcuts
+- move a zoomed screen around with one finger using the Move tool on the Screen toolbar
+- stay connected to several PCs at once: the Screen tab lists them and opens the one you pick, and
+  the banner at the top switches which PC the System and Manage tabs work with
 - list open windows and switch to, minimize, maximize, restore or close them
 - browse the PC's folders and drives, and open, create, rename, copy, move and delete files
 - reach the PC from any network (mobile data, another Wi-Fi) through your own VPN (Tailscale,

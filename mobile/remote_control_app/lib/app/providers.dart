@@ -4,6 +4,7 @@ import '../data/discovery/discovery_service.dart';
 import '../data/identity/device_identity.dart';
 import '../data/storage/paired_pc_store.dart';
 import '../domain/connection_controller.dart';
+import '../domain/connection_manager.dart';
 import '../protocol/protocol.dart';
 
 /// This device's identity store.
@@ -44,14 +45,37 @@ final discoveredPcsProvider = StreamProvider.autoDispose<List<DiscoveryBeacon>>(
   if (found.isEmpty) yield const <DiscoveryBeacon>[];
 });
 
-/// The connection controller, shared across every screen.
-final connectionProvider = ChangeNotifierProvider<ConnectionController>((ref) {
-  final controller = ConnectionController(
-    identityStore: ref.watch(identityStoreProvider),
-    pairedStore: ref.watch(pairedStoreProvider),
-    discovery: ref.watch(discoveryProvider),
-  );
+/// Every PC connection, one per PC, and which PC is selected.
+final connectionManagerProvider = ChangeNotifierProvider<ConnectionManager>((ref) {
+  final identityStore = ref.watch(identityStoreProvider);
+  final pairedStore = ref.watch(pairedStoreProvider);
+  final discovery = ref.watch(discoveryProvider);
 
-  ref.onDispose(controller.dispose);
-  return controller;
+  return ConnectionManager(
+    store: pairedStore,
+    create: () => ConnectionController(
+      identityStore: identityStore,
+      pairedStore: pairedStore,
+      discovery: discovery,
+    ),
+  );
+});
+
+/// The selected PC's connection: the one the System, Manage and Settings tabs act on.
+///
+/// Changes only when another PC is selected. Watch [connectionStatusProvider] to follow what
+/// the connection is doing.
+final connectionProvider = Provider<ConnectionController>(
+  (ref) => ref.watch(connectionManagerProvider.select((manager) => manager.active)),
+);
+
+/// The selected PC's connection status, updated as it changes.
+final connectionStatusProvider = Provider<ConnectionStatus>((ref) {
+  final connection = ref.watch(connectionProvider);
+
+  void update() => ref.state = connection.status;
+  connection.addListener(update);
+  ref.onDispose(() => connection.removeListener(update));
+
+  return connection.status;
 });

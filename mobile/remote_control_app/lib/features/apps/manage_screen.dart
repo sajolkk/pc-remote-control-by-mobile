@@ -31,7 +31,7 @@ class _ManageScreenState extends ConsumerState<ManageScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final connected = ref.watch(connectionProvider.select((c) => c.status.isConnected));
+    final connected = ref.watch(connectionStatusProvider.select((s) => s.isConnected));
 
     if (!connected) {
       return const NotConnectedView();

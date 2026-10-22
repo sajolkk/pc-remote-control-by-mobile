@@ -24,8 +24,13 @@ class _SystemScreenState extends ConsumerState<SystemScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final connection = ref.watch(connectionProvider);
-    final status = connection.status;
+    final status = ref.watch(connectionStatusProvider);
+
+    // Another PC selected: what was shown belongs to the previous one.
+    ref.listen(connectionProvider, (_, __) {
+      setState(() => _deviceInfo = null);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+    });
 
     if (!status.isConnected) {
       return const _NotConnected();
@@ -160,7 +165,7 @@ class _SystemScreenState extends ConsumerState<SystemScreen> {
           const SizedBox(height: 24),
           Center(
             child: TextButton.icon(
-              onPressed: () => ref.read(connectionProvider).disconnect(),
+              onPressed: () => ref.read(connectionManagerProvider).disconnectActive(),
               icon: const Icon(Icons.link_off),
               label: const Text('Disconnect'),
             ),

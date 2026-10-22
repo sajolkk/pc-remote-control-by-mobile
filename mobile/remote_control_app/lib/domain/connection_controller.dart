@@ -201,6 +201,9 @@ class ConnectionController extends ChangeNotifier {
   /// The live client, for feature code to send commands through.
   ControlClient? get client => _client;
 
+  /// The PC's IP address on the live connection, or null when there is none.
+  String? get peerAddress => _client?.peerAddress;
+
   /// Connects to a paired PC and keeps the connection up until [disconnect].
   Future<void> connect(PairedPc pc) async {
     _wantConnection = true;

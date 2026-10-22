@@ -336,7 +336,7 @@ class _PairScreenState extends ConsumerState<PairScreen> {
 
       // Straight on to a live connection: no second tap, and no search, because the address
       // that just worked is remembered.
-      ref.read(connectionProvider).connect(pc).ignore();
+      ref.read(connectionManagerProvider).connect(pc).ignore();
       await Future<void>.delayed(const Duration(milliseconds: 1200));
       if (mounted) Navigator.of(context).pop(true);
     } on CertificatePinMismatch catch (error) {
