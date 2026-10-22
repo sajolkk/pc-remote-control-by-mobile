@@ -64,7 +64,10 @@ class DeviceIdentityStore {
   DeviceIdentityStore({FlutterSecureStorage? storage})
       : _storage = storage ??
             const FlutterSecureStorage(
-              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+              // resetOnError: data the Android Keystore can no longer decrypt (its key is gone,
+              // e.g. after a reinstall) is wiped instead of failing every read. It cannot be
+              // recovered anyway; starting clean means pairing again rather than a stuck app.
+              aOptions: AndroidOptions(encryptedSharedPreferences: true, resetOnError: true),
               iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
             );
 

@@ -210,7 +210,10 @@ class PairedPcStore {
   PairedPcStore({FlutterSecureStorage? storage})
       : _storage = storage ??
             const FlutterSecureStorage(
-              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+              // resetOnError: data the Android Keystore can no longer decrypt (its key is gone,
+              // e.g. after a reinstall) is wiped instead of failing every read. It cannot be
+              // recovered anyway; starting clean means pairing again rather than a stuck app.
+              aOptions: AndroidOptions(encryptedSharedPreferences: true, resetOnError: true),
               iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
             );
 
@@ -233,7 +236,15 @@ class PairedPcStore {
   }
 
   Future<List<PairedPc>> getAll() async {
-    final raw = await _storage.read(key: _key);
+    String? raw;
+    try {
+      raw = await _storage.read(key: _key);
+    } on Object {
+      // Unreadable storage (see the constructor) is the same as an empty one: the user pairs
+      // again, rather than facing a platform stack trace where the list of PCs should be.
+      return const [];
+    }
+
     if (raw == null || raw.isEmpty) return const [];
 
     try {
