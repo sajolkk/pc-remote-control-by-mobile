@@ -129,7 +129,7 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
       status.has(Capabilities.screenCapture) &&
       status.granted(Permissions.viewScreen) &&
       status.sessionAgentConnected &&
-      !status.isLoggedOut;
+      (!status.isLoggedOut || status.has(Capabilities.secureDesktop));
 
   Future<void> _startIfPossible() async {
     if (!mounted || !_wantStream || _media.value.isActive) return;
@@ -251,7 +251,7 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
     _snack('Press back again to close the screen.');
   }
 
-  String get _pcName => _connection.status.pc?.deviceName ?? 'PC';
+  String get _pcName => _connection.status.pc?.displayName ?? 'PC';
 
   /// Back to the list of PCs. The stream stops as this screen goes.
   void _leave() {
@@ -522,7 +522,9 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
       );
     }
 
-    if (status.isLoggedOut || !status.sessionAgentConnected) {
+    // A PC that can show its sign-in screen streams it like any other; the user signs in there.
+    if ((status.isLoggedOut && !status.has(Capabilities.secureDesktop)) ||
+        !status.sessionAgentConnected) {
       return (
         Icons.person_off_outlined,
         'Nobody is signed in',

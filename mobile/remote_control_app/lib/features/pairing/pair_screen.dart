@@ -330,7 +330,7 @@ class _PairScreenState extends ConsumerState<PairScreen> {
 
       setState(() {
         _stage = _Stage.success;
-        _pcName = pc.deviceName;
+        _pcName = pc.displayName;
         _message = 'Connecting…';
       });
 

@@ -302,4 +302,68 @@ public sealed class IpcHelloArgs
     /// <summary>Capabilities the agent probed in its session.</summary>
     [JsonPropertyName("capabilities")]
     public string[] Capabilities { get; init; } = [];
+
+    /// <summary>
+    /// Which share of the session's work this agent does: <c>full</c>, <c>user</c> or
+    /// <c>desktop</c> (see <see cref="SessionAgentKind"/>). Absent from an older agent, which is
+    /// a full one.
+    /// </summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = SessionAgentKinds.Full;
+}
+
+/// <summary>
+/// The share of a session's work one agent process does.
+/// </summary>
+/// <remarks>
+/// <para>Installed as a service, each signed-in session gets two agents. The <see cref="User"/>
+/// agent runs as the signed-in user and does everything that must happen with the user's own
+/// rights: applications, files, windows, the browser, the tray icon and pairing prompts. The
+/// <see cref="Desktop"/> agent runs as SYSTEM in the same session and does screen and input
+/// only, because only SYSTEM can follow Windows onto the lock screen, the sign-in screen and UAC
+/// prompts (§12.1). With nobody signed in, the desktop agent runs alone and serves the sign-in
+/// screen.</para>
+///
+/// <para>A <see cref="Full"/> agent does both, as one process at the user's rights. That is the
+/// portable deployment, where nothing runs as SYSTEM, and any older agent.</para>
+/// </remarks>
+public enum SessionAgentKind
+{
+    /// <summary>Everything, at the user's rights.</summary>
+    Full,
+
+    /// <summary>Everything except screen and input, at the user's rights.</summary>
+    User,
+
+    /// <summary>Screen and input only, as SYSTEM.</summary>
+    Desktop,
+}
+
+/// <summary>Wire names for <see cref="SessionAgentKind"/>.</summary>
+public static class SessionAgentKinds
+{
+    /// <summary><see cref="SessionAgentKind.Full"/>.</summary>
+    public const string Full = "full";
+
+    /// <summary><see cref="SessionAgentKind.User"/>.</summary>
+    public const string User = "user";
+
+    /// <summary><see cref="SessionAgentKind.Desktop"/>.</summary>
+    public const string Desktop = "desktop";
+
+    /// <summary>The wire name of a kind.</summary>
+    public static string ToName(SessionAgentKind kind) => kind switch
+    {
+        SessionAgentKind.User => User,
+        SessionAgentKind.Desktop => Desktop,
+        _ => Full,
+    };
+
+    /// <summary>Parses a wire name; anything unrecognised is a full agent.</summary>
+    public static SessionAgentKind Parse(string? name) => name switch
+    {
+        User => SessionAgentKind.User,
+        Desktop => SessionAgentKind.Desktop,
+        _ => SessionAgentKind.Full,
+    };
 }

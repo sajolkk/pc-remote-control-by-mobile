@@ -7,6 +7,7 @@ import '../features/remote_desktop/screen_picker_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/system/system_screen.dart';
 import '../domain/connection_controller.dart';
+import '../protocol/protocol.dart';
 import 'providers.dart';
 
 /// The application shell.
@@ -151,7 +152,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                         ? Icons.radio_button_checked
                         : Icons.radio_button_unchecked,
                   ),
-                  title: Text(pc.deviceName),
+                  title: Text(pc.displayName),
                   subtitle: Text(connection.status.userName ?? 'Connected'),
                   onTap: () => Navigator.of(sheetContext).pop(pc.deviceId),
                 ),
@@ -238,17 +239,23 @@ class _ConnectionBanner extends StatelessWidget {
   }
 
   String _readyLabel() {
-    final name = status.pc?.deviceName ?? 'PC';
+    final name = status.pc?.displayName ?? 'PC';
     final tls = status.tlsDescription;
 
     // The lock state is surfaced here because it explains, without the user having to ask,
     // why the screen and input features are unavailable.
+    final canUnlock = status.has(Capabilities.secureDesktop);
+
     if (status.isLocked) {
-      return '$name — locked. Unlock at the PC to view or control the screen.';
+      return canUnlock
+          ? '$name — locked. Open Screen to unlock it.'
+          : '$name — locked. Unlock at the PC to view or control the screen.';
     }
 
     if (status.isLoggedOut) {
-      return '$name — nobody signed in. Power controls still work.';
+      return canUnlock
+          ? '$name — at the sign-in screen. Open Screen to sign in.'
+          : '$name — nobody signed in. Power controls still work.';
     }
 
     // Worth saying, because it explains a slower connection and confirms the VPN route works.

@@ -18,7 +18,7 @@ class _IdleConnection extends ConnectionController {
   ConnectionStatus get status => const ConnectionStatus();
 }
 
-Future<PairedPcStore> _pump(WidgetTester tester, {RemoteAddress? remote}) async {
+Future<PairedPcStore> _pump(WidgetTester tester, {RemoteAddress? remote, String? nickname}) async {
   FlutterSecureStorage.setMockInitialValues({});
 
   final store = PairedPcStore();
@@ -36,6 +36,7 @@ Future<PairedPcStore> _pump(WidgetTester tester, {RemoteAddress? remote}) async 
     );
 
     if (remote != null) await store.setRemoteAddress('pc-1', remote);
+    if (nickname != null) await store.setNickname('pc-1', nickname);
   });
 
   tester.view.physicalSize = const Size(1080, 2340);
@@ -73,6 +74,38 @@ Future<void> _openDialog(WidgetTester tester, String menuItem) async {
 }
 
 void main() {
+  testWidgets('a PC can be renamed on the phone, keeping its own name visible', (tester) async {
+    final store = await _pump(tester);
+
+    await _openDialog(tester, 'Rename…');
+    expect(find.text('Shown on this phone only. The PC calls itself Office PC.'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'My home PC');
+    await tester.tap(find.text('Save'));
+    await _settle(tester);
+
+    final stored = await tester.runAsync(() => store.find('pc-1'));
+    expect(stored!.nickname, 'My home PC');
+    expect(stored.deviceName, 'Office PC');
+
+    expect(find.text('My home PC'), findsOneWidget);
+    expect(find.textContaining('Office PC'), findsOneWidget);
+  });
+
+  testWidgets('resetting a renamed PC shows its own name again', (tester) async {
+    final store = await _pump(tester, nickname: 'My home PC');
+
+    expect(find.text('My home PC'), findsOneWidget);
+
+    await _openDialog(tester, 'Rename…');
+    await tester.tap(find.text('Reset'));
+    await _settle(tester);
+
+    expect((await tester.runAsync(() => store.find('pc-1')))!.nickname, isNull);
+    expect(find.text('My home PC'), findsNothing);
+    expect(find.text('Office PC'), findsOneWidget);
+  });
+
   testWidgets('a remote address can be added, and says what it is for', (tester) async {
     final store = await _pump(tester);
 

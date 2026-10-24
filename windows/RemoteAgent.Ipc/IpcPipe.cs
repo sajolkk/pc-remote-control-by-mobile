@@ -52,6 +52,12 @@ public static class IpcPipe
     /// <summary>Environment variable carrying the session id the service expects.</summary>
     public const string SessionIdVariable = "PCREMOTE_SESSION_ID";
 
+    /// <summary>
+    /// Environment variable carrying the agent's kind (<see cref="SessionAgentKinds"/>). Absent
+    /// means a full agent.
+    /// </summary>
+    public const string AgentKindVariable = "PCREMOTE_AGENT_KIND";
+
     /// <summary>Maximum concurrent server instances, one per plausible interactive session.</summary>
     public const int MaxServerInstances = 8;
 

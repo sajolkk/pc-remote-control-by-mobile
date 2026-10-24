@@ -21,6 +21,12 @@ namespace RemoteAgent.Service.Services;
 /// exponentially, and after a run of them the supervisor stops trying until the session
 /// changes, so a permanently broken agent costs one log entry rather than a spin.</para>
 ///
+/// <para><b>Two agents per session when installed.</b> The service runs as SYSTEM, so it starts a
+/// desktop agent as SYSTEM in the console session for screen and input — the only way the lock
+/// screen and the sign-in screen can be seen and used remotely — beside the user agent that does
+/// everything needing the user's own rights (see <see cref="SessionAgentKind"/>). Each kind has its
+/// own backoff, so one failing does not stop the other.</para>
+///
 /// <para><b>Why not a scheduled task at logon?</b> Because then nothing owns the agent's
 /// lifetime: a crash would leave the desktop unreachable until the next logon, and the service
 /// would have no way to know why. Spawning from the service means the process that needs the
@@ -62,9 +68,15 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
     // the DI container disposes its singletons. The second pass must be a no-op.
     private bool _disposed;
 
-    private DateTimeOffset _nextAttemptAfter = DateTimeOffset.MinValue;
-    private TimeSpan _backoff = MinBackoff;
-    private int _consecutiveFailures;
+    private readonly bool _runningAsSystem;
+
+    private readonly Dictionary<SessionAgentKind, LaunchState> _launchStates = new()
+    {
+        [SessionAgentKind.Full] = new LaunchState(),
+        [SessionAgentKind.User] = new LaunchState(),
+        [SessionAgentKind.Desktop] = new LaunchState(),
+    };
+
     private Task? _monitor;
 
     /// <summary>Creates the supervisor.</summary>
@@ -88,6 +100,7 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
         _sessionState = sessionState ?? throw new ArgumentNullException(nameof(sessionState));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _agentExecutablePath = agentExecutablePath ?? throw new ArgumentNullException(nameof(agentExecutablePath));
+        _runningAsSystem = IsLocalSystem();
     }
 
     /// <summary>Starts watching for sessions that need an agent.</summary>
@@ -115,9 +128,10 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
         // A session change is a fresh start: whatever went wrong before may not apply to this
         // user, so the failure count and backoff are reset. The startup grace is cleared too,
         // because an agent launched into the previous session is no longer the one we need.
-        _consecutiveFailures = 0;
-        _backoff = MinBackoff;
-        _nextAttemptAfter = DateTimeOffset.MinValue;
+        foreach (LaunchState launch in _launchStates.Values)
+        {
+            launch.Reset();
+        }
 
         _registry.SetActiveSession(_sessionState.ActiveSessionId);
     }
@@ -125,12 +139,17 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
     private void OnAgentDisconnected(object? sender, int sessionId)
     {
         _logger.LogInformation(
-            "The agent for session {SessionId} disconnected; it will be restarted if that session is active.",
+            "An agent for session {SessionId} disconnected; it will be restarted if that session is active.",
             sessionId);
 
-        // A disconnect is definite information that no agent is running, so the startup grace no
-        // longer applies and the replacement can start immediately.
-        _nextAttemptAfter = DateTimeOffset.MinValue;
+        // A disconnect is definite information that an agent is no longer running, so the startup
+        // grace no longer applies and the replacement can start immediately. The event does not
+        // say which kind went, and clearing the grace for one that is still running costs nothing:
+        // it is connected, so nothing is launched for it.
+        foreach (LaunchState launch in _launchStates.Values)
+        {
+            launch.NextAttemptAfter = DateTimeOffset.MinValue;
+        }
     }
 
     private async Task MonitorAsync(CancellationToken cancellationToken)
@@ -139,7 +158,7 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
         {
             try
             {
-                await EnsureAgentAsync(cancellationToken).ConfigureAwait(false);
+                await EnsureAgentsAsync(cancellationToken).ConfigureAwait(false);
                 await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -162,29 +181,81 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
         }
     }
 
-    private async Task EnsureAgentAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Decides which agents the console session needs, and starts any that are missing.
+    /// </summary>
+    /// <remarks>
+    /// <para>Installed as a service (SYSTEM, in Session 0) the work is split: a desktop agent that
+    /// runs as SYSTEM for screen and input, so the lock screen and the sign-in screen can be seen
+    /// and used, and a user agent for everything that must run with the user's own rights. The
+    /// desktop agent is wanted even when nobody is signed in — the sign-in screen is exactly what
+    /// someone needs after a restart.</para>
+    ///
+    /// <para>Anywhere else — the portable foreground process, or a console-mode run — nothing can
+    /// cross into another session as SYSTEM, so one full agent does everything, as before.</para>
+    /// </remarks>
+    private async Task EnsureAgentsAsync(CancellationToken cancellationToken)
     {
         int? sessionId = _sessionState.ActiveSessionId;
         _registry.SetActiveSession(sessionId);
 
-        if (sessionId is null || _sessionState.State == InteractiveSessionState.LoggedOut)
+        if (sessionId is null)
         {
-            // Nobody signed in. Not a problem to solve — the service still answers power,
-            // status and wake commands, which is the whole reason it runs in Session 0 (§3).
+            // No console session at all. Not a problem to solve — the service still answers
+            // power, status and wake commands, which is the whole reason it runs in Session 0 (§3).
             return;
         }
 
-        if (_registry.All.Any(a => a.SessionId == sessionId.Value && a.Connection.IsConnected))
+        bool signedIn = _sessionState.State != InteractiveSessionState.LoggedOut;
+
+        // Crossing a session boundary needs SYSTEM and a duplicated token; launching into our own
+        // session needs neither, and attempting the cross-session path there would fail with
+        // access denied for an ordinary user. Deciding by comparing session ids means the
+        // installed service and the portable foreground process both work without a mode flag.
+        int currentSession = System.Diagnostics.Process.GetCurrentProcess().SessionId;
+        bool sameSession = currentSession == sessionId.Value;
+        bool split = _runningAsSystem && !sameSession;
+
+        if (split)
+        {
+            await EnsureAgentAsync(sessionId.Value, SessionAgentKind.Desktop, sameSession, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (signedIn)
+            {
+                await EnsureAgentAsync(sessionId.Value, SessionAgentKind.User, sameSession, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        if (signedIn)
+        {
+            await EnsureAgentAsync(sessionId.Value, SessionAgentKind.Full, sameSession, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private async Task EnsureAgentAsync(
+        int sessionId,
+        SessionAgentKind kind,
+        bool sameSession,
+        CancellationToken cancellationToken)
+    {
+        LaunchState state = _launchStates[kind];
+
+        if (_registry.IsAgentConnected(sessionId, kind))
         {
             return;
         }
 
-        if (_consecutiveFailures >= MaxConsecutiveFailures)
+        if (state.ConsecutiveFailures >= MaxConsecutiveFailures)
         {
             return;
         }
 
-        if (DateTimeOffset.UtcNow < _nextAttemptAfter)
+        if (DateTimeOffset.UtcNow < state.NextAttemptAfter)
         {
             return;
         }
@@ -193,69 +264,98 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
         try
         {
             // Re-check under the lock: the monitor tick and a session-change event can both
-            // arrive here, and launching two agents into one session would have them fight
-            // over the same desktop resources.
-            if (_registry.All.Any(a => a.SessionId == sessionId.Value && a.Connection.IsConnected))
+            // arrive here, and launching two agents of one kind into one session would have them
+            // fight over the same desktop resources.
+            if (_registry.IsAgentConnected(sessionId, kind))
             {
                 return;
             }
 
-            string token = _registry.IssueSpawnToken(sessionId.Value);
+            string token = _registry.IssueSpawnToken(sessionId, kind);
 
             var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 [IpcPipe.SpawnTokenVariable] = token,
-                [IpcPipe.SessionIdVariable] = sessionId.Value.ToString(),
+                [IpcPipe.SessionIdVariable] = sessionId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                [IpcPipe.AgentKindVariable] = SessionAgentKinds.ToName(kind),
             };
 
-            // Crossing a session boundary needs SYSTEM and a duplicated user token; launching into
-            // our own session needs neither, and attempting the cross-session path there would fail
-            // with access denied for an ordinary user. Deciding by comparing session ids means the
-            // installed service and the portable foreground process both work without a mode flag.
-            int currentSession = System.Diagnostics.Process.GetCurrentProcess().SessionId;
-            bool sameSession = currentSession == sessionId.Value;
-
-            AgentLaunchResult result = sameSession
-                ? _launcher.LaunchInCurrentSession(_agentExecutablePath, environment)
-                : _launcher.Launch((uint)sessionId.Value, _agentExecutablePath, environment);
+            AgentLaunchResult result = kind switch
+            {
+                SessionAgentKind.Desktop => _launcher.LaunchAsSystem((uint)sessionId, _agentExecutablePath, environment),
+                _ when sameSession => _launcher.LaunchInCurrentSession(_agentExecutablePath, environment),
+                _ => _launcher.Launch((uint)sessionId, _agentExecutablePath, environment),
+            };
 
             if (result.Launched)
             {
-                _consecutiveFailures = 0;
-                _backoff = MinBackoff;
+                state.ConsecutiveFailures = 0;
+                state.Backoff = MinBackoff;
 
                 // Give the new process time to connect before considering another launch, or the
                 // next monitor tick spawns a second agent while the first is still starting.
-                _nextAttemptAfter = DateTimeOffset.UtcNow.Add(StartupGrace);
+                state.NextAttemptAfter = DateTimeOffset.UtcNow.Add(StartupGrace);
                 return;
             }
 
-            _consecutiveFailures++;
-            _nextAttemptAfter = DateTimeOffset.UtcNow.Add(_backoff);
-            _backoff = TimeSpan.FromTicks(Math.Min(_backoff.Ticks * 2, MaxBackoff.Ticks));
+            state.ConsecutiveFailures++;
+            state.NextAttemptAfter = DateTimeOffset.UtcNow.Add(state.Backoff);
+            state.Backoff = TimeSpan.FromTicks(Math.Min(state.Backoff.Ticks * 2, MaxBackoff.Ticks));
 
-            if (_consecutiveFailures >= MaxConsecutiveFailures)
+            if (state.ConsecutiveFailures >= MaxConsecutiveFailures)
             {
                 _logger.LogError(
-                    "Giving up on starting the session agent for session {SessionId} after {Count} attempts: " +
-                    "{Reason} Session-scoped features stay unavailable until the next sign-in.",
-                    sessionId.Value,
-                    _consecutiveFailures,
+                    "Giving up on starting the {Kind} agent for session {SessionId} after {Count} attempts: " +
+                    "{Reason} The features it provides stay unavailable until the session changes.",
+                    kind,
+                    sessionId,
+                    state.ConsecutiveFailures,
                     result.FailureReason);
             }
             else
             {
                 _logger.LogWarning(
-                    "Could not start the session agent for session {SessionId} ({Reason}). " +
+                    "Could not start the {Kind} agent for session {SessionId} ({Reason}). " +
                     "Retrying in {Backoff}s.",
-                    sessionId.Value,
+                    kind,
+                    sessionId,
                     result.FailureReason,
-                    _backoff.TotalSeconds);
+                    state.Backoff.TotalSeconds);
             }
         }
         finally
         {
             _launchLock.Release();
+        }
+    }
+
+    private static bool IsLocalSystem()
+    {
+        try
+        {
+            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            return identity.IsSystem;
+        }
+        catch (System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Launch bookkeeping for one kind of agent.</summary>
+    private sealed class LaunchState
+    {
+        public DateTimeOffset NextAttemptAfter { get; set; } = DateTimeOffset.MinValue;
+
+        public TimeSpan Backoff { get; set; } = MinBackoff;
+
+        public int ConsecutiveFailures { get; set; }
+
+        public void Reset()
+        {
+            ConsecutiveFailures = 0;
+            Backoff = MinBackoff;
+            NextAttemptAfter = DateTimeOffset.MinValue;
         }
     }
 

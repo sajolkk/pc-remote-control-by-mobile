@@ -86,6 +86,7 @@ class DevicesScreen extends ConsumerWidget {
                             onDisconnect: () => manager.disconnect(pc.deviceId),
                             onOpenScreen: () => openScreen(context, ref, pc),
                             onEditRemoteAddress: () => _editRemoteAddress(context, ref, pc),
+                            onRename: () => _rename(context, ref, pc),
                             onForget: () => _forget(context, ref, pc),
                           ),
                       ],
@@ -271,7 +272,7 @@ class DevicesScreen extends ConsumerWidget {
   /// when the PC answers on this network, otherwise by its address.
   Future<void> _pairAgain(BuildContext context, WidgetRef ref, PairedPc pc) async {
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(SnackBar(content: Text('Looking for ${pc.deviceName}…')));
+    messenger.showSnackBar(SnackBar(content: Text('Looking for ${pc.displayName}…')));
 
     DiscoveryBeacon? found;
     try {
@@ -406,8 +407,8 @@ class DevicesScreen extends ConsumerWidget {
         SnackBar(
           content: Text(
             result.remote == null
-                ? 'Remote address removed for ${pc.deviceName}.'
-                : 'Remote address saved for ${pc.deviceName}.',
+                ? 'Remote address removed for ${pc.displayName}.'
+                : 'Remote address saved for ${pc.displayName}.',
           ),
         ),
       );
@@ -427,11 +428,44 @@ class DevicesScreen extends ConsumerWidget {
     }
   }
 
+  /// Gives a PC a name of the user's choosing on this phone, or (cleared) goes back to the name
+  /// the PC reports. Nothing is sent to the PC.
+  Future<void> _rename(BuildContext context, WidgetRef ref, PairedPc pc) async {
+    final result = await showDialog<({String? name})>(
+      context: context,
+      builder: (_) => _RenameDialog(pc: pc),
+    );
+
+    if (result == null) return;
+
+    final updated = await ref.read(pairedStoreProvider).setNickname(pc.deviceId, result.name);
+    ref.invalidate(pairedPcsProvider);
+
+    if (updated == null) return;
+
+    // A connected PC shows its name in the app bar and the status line; update them now.
+    ref.read(connectionManagerProvider).updatePc(updated);
+
+    if (!context.mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            updated.nickname == null
+                ? 'Showing the PC\'s own name, ${updated.deviceName}.'
+                : 'Renamed to ${updated.displayName}.',
+          ),
+        ),
+      );
+  }
+
   Future<void> _forget(BuildContext context, WidgetRef ref, PairedPc pc) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('Forget ${pc.deviceName}?'),
+        title: Text('Forget ${pc.displayName}?'),
         content: const Text(
           'This device will no longer connect to that PC. You will need to scan its QR code '
           'again to pair.\n\nThis does not remove the pairing on the PC itself — revoke it '
@@ -467,6 +501,7 @@ class _PairedTile extends StatelessWidget {
     required this.onDisconnect,
     required this.onOpenScreen,
     required this.onEditRemoteAddress,
+    required this.onRename,
     required this.onForget,
   });
 
@@ -479,6 +514,7 @@ class _PairedTile extends StatelessWidget {
   final Future<void> Function() onDisconnect;
   final VoidCallback onOpenScreen;
   final VoidCallback onEditRemoteAddress;
+  final VoidCallback onRename;
   final VoidCallback onForget;
 
   @override
@@ -508,48 +544,64 @@ class _PairedTile extends StatelessWidget {
                   ? null
                   : Theme.of(context).disabledColor,
         ),
-        title: Text(pc.deviceName),
+        title: Text(pc.displayName),
         subtitle: Text(
-          remote == null
-              ? _subtitle(isConnected, isOnline)
-              : '${_subtitle(isConnected, isOnline)}\nRemote address: $remote',
+          [
+            _subtitle(isConnected, isOnline),
+            // The PC's own name stays visible under a nickname, so it can still be matched to
+            // what the PC itself shows.
+            if (pc.nickname != null) pc.deviceName,
+            if (remote != null) 'Remote address: $remote',
+          ].join('\n'),
         ),
-        isThreeLine: remote != null,
-        trailing: isBusy
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
+        isThreeLine: remote != null || pc.nickname != null,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isBusy)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
               )
-            : Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (isConnected)
-                    FilledButton.tonalIcon(
-                      onPressed: onOpenScreen,
-                      icon: const Icon(Icons.cast_connected, size: 18),
-                      label: const Text('Screen'),
-                    )
-                  else
-                    FilledButton.tonal(onPressed: onConnect, child: const Text('Connect')),
-                  PopupMenuButton<VoidCallback>(
-                    tooltip: 'More',
-                    onSelected: (action) => action(),
-                    itemBuilder: (context) => [
-                      if (isConnected)
-                        PopupMenuItem(
-                          value: () => onDisconnect(),
-                          child: const Text('Disconnect'),
-                        ),
-                      PopupMenuItem(
-                        value: onEditRemoteAddress,
-                        child: Text(remote == null ? 'Add remote address…' : 'Remote address…'),
-                      ),
-                      PopupMenuItem(value: onForget, child: const Text('Forget this PC')),
-                    ],
+            else if (isConnected)
+              FilledButton.tonalIcon(
+                onPressed: onOpenScreen,
+                icon: const Icon(Icons.cast_connected, size: 18),
+                label: const Text('Screen'),
+              )
+            else
+              FilledButton.tonal(onPressed: onConnect, child: const Text('Connect')),
+
+            // Always offered, connecting or not: a PC that can never be reached again (replaced,
+            // reinstalled, gone) keeps retrying, and must still be renamable and forgettable.
+            PopupMenuButton<VoidCallback>(
+              tooltip: 'More',
+              onSelected: (action) => action(),
+              itemBuilder: (context) => [
+                if (isConnected)
+                  PopupMenuItem(
+                    value: () => onDisconnect(),
+                    child: const Text('Disconnect'),
+                  )
+                else if (isBusy)
+                  PopupMenuItem(
+                    value: () => onDisconnect(),
+                    child: const Text('Stop connecting'),
                   ),
-                ],
-              ),
+                PopupMenuItem(value: onRename, child: const Text('Rename…')),
+                PopupMenuItem(
+                  value: onEditRemoteAddress,
+                  child: Text(remote == null ? 'Add remote address…' : 'Remote address…'),
+                ),
+                PopupMenuItem(value: onForget, child: const Text('Forget this PC')),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -610,7 +662,7 @@ class _RemoteAddressDialogState extends State<_RemoteAddressDialog> {
     final pc = widget.pc;
 
     return AlertDialog(
-      title: Text('Remote address for ${pc.deviceName}'),
+      title: Text('Remote address for ${pc.displayName}'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -663,6 +715,78 @@ class _RemoteAddressDialogState extends State<_RemoteAddressDialog> {
     }
 
     Navigator.of(context).pop((remote: remote));
+  }
+}
+
+/// Edits the name this phone shows for a paired PC.
+///
+/// Pops a record holding the new name, or holding null to go back to the PC's own name. Popping
+/// nothing means the user cancelled.
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.pc});
+
+  final PairedPc pc;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  /// Long enough for "Living room PC (upstairs)", short enough to fit an app bar.
+  static const _maxLength = 40;
+
+  late final _controller = TextEditingController(text: widget.pc.displayName)
+    ..selection = TextSelection(baseOffset: 0, extentOffset: widget.pc.displayName.length);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pc = widget.pc;
+
+    return AlertDialog(
+      title: const Text('Rename PC'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Shown on this phone only. The PC calls itself ${pc.deviceName}.'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            maxLength: _maxLength,
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _save(),
+            decoration: const InputDecoration(
+              labelText: 'Name',
+              hintText: 'My home PC',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        if (pc.nickname != null)
+          TextButton(
+            onPressed: () => Navigator.of(context).pop((name: null)),
+            child: const Text('Reset'),
+          ),
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(onPressed: _save, child: const Text('Save')),
+      ],
+    );
+  }
+
+  void _save() {
+    final name = _controller.text.trim();
+
+    // Saving the PC's own name, or nothing, is the same as having no nickname.
+    Navigator.of(context).pop((name: name.isEmpty || name == widget.pc.deviceName ? null : name));
   }
 }
 

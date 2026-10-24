@@ -40,7 +40,7 @@ class _SystemScreenState extends ConsumerState<SystemScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(status.pc?.deviceName ?? 'System'),
+        title: Text(status.pc?.displayName ?? 'System'),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -54,17 +54,34 @@ class _SystemScreenState extends ConsumerState<SystemScreen> {
         children: [
           _StatusCard(status: status, info: _deviceInfo),
 
-          if (status.isLocked)
+          if (status.isLocked && status.has(Capabilities.secureDesktop))
+            const _Notice(
+              icon: Icons.lock_outline,
+              title: 'The PC is locked',
+              message:
+                  'Open the Screen tab to see the lock screen and unlock it: tap or press a key to '
+                  'show the password box, then type with the keyboard button. Apps, files and '
+                  'windows come back once it is unlocked.',
+            )
+          else if (status.isLocked)
             const _Notice(
               icon: Icons.lock_outline,
               title: 'The PC is locked',
               message:
                   'Windows protects the lock screen, so the desktop cannot be viewed or controlled '
-                  'while it is locked. Unlocking has to happen at the PC itself — this is a Windows '
-                  'security boundary, not a limitation of this app. Power controls still work.',
+                  'while it is locked. Update PC-Remote on the PC to unlock it from here. Power '
+                  'controls still work.',
             ),
 
-          if (status.isLoggedOut)
+          if (status.isLoggedOut && status.has(Capabilities.secureDesktop))
+            const _Notice(
+              icon: Icons.person_outline,
+              title: 'Nobody is signed in',
+              message:
+                  'Open the Screen tab to see the sign-in screen and sign in from here. Apps, '
+                  'files and windows need a signed-in user.',
+            )
+          else if (status.isLoggedOut)
             const _Notice(
               icon: Icons.person_off_outlined,
               title: 'Nobody is signed in',

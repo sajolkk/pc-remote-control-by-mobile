@@ -73,8 +73,6 @@ public sealed class SessionAgentLauncher
 
         nint userToken = nint.Zero;
         nint primaryToken = nint.Zero;
-        nint environment = nint.Zero;
-        nint customEnvironment = nint.Zero;
 
         try
         {
@@ -110,6 +108,125 @@ public sealed class SessionAgentLauncher
                     $"Could not duplicate the user token (Win32 error {Marshal.GetLastWin32Error()}).");
             }
 
+            return StartWithToken(primaryToken, sessionId, executablePath, extraEnvironment, "the session agent");
+        }
+        finally
+        {
+            if (primaryToken != nint.Zero)
+            {
+                NativeMethods.CloseHandle(primaryToken);
+            }
+
+            if (userToken != nint.Zero)
+            {
+                NativeMethods.CloseHandle(userToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Starts the agent executable in the given session as SYSTEM, for the desktop agent.
+    /// </summary>
+    /// <remarks>
+    /// <para>The lock screen, the sign-in screen and UAC prompts are drawn on Winlogon's desktop,
+    /// which only SYSTEM may open. The service is SYSTEM, but in Session 0, where there is no
+    /// screen. So it duplicates its own token, changes the copy's session id to the user's (which
+    /// needs SeTcbPrivilege, held only by SYSTEM) and starts the desktop agent with it: a SYSTEM
+    /// process on the user's screen, able to follow input onto the secure desktop (§12.1).</para>
+    ///
+    /// <para>Unlike <see cref="Launch"/> this needs nobody signed in, so the sign-in screen after a
+    /// restart or a sign-out can be shown and used too. Only screen and input run in that process;
+    /// apps, files and windows stay in the user's own agent, at the user's own rights.</para>
+    /// </remarks>
+    public AgentLaunchResult LaunchAsSystem(
+        uint sessionId,
+        string executablePath,
+        IReadOnlyDictionary<string, string> extraEnvironment)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        ArgumentNullException.ThrowIfNull(extraEnvironment);
+
+        if (!File.Exists(executablePath))
+        {
+            return new AgentLaunchResult(false, 0, $"The agent executable was not found at {executablePath}.");
+        }
+
+        nint serviceToken = nint.Zero;
+        nint primaryToken = nint.Zero;
+
+        try
+        {
+            if (!NativeMethods.OpenProcessToken(
+                    NativeMethods.GetCurrentProcess(),
+                    NativeMethods.TokenDuplicate | NativeMethods.TokenQuery | NativeMethods.TokenAssignPrimary |
+                    NativeMethods.TokenAdjustDefault | NativeMethods.TokenAdjustSessionId,
+                    out serviceToken))
+            {
+                return new AgentLaunchResult(
+                    false,
+                    0,
+                    $"Could not open the service's own token (Win32 error {Marshal.GetLastWin32Error()}).");
+            }
+
+            if (!NativeMethods.DuplicateTokenEx(
+                    serviceToken,
+                    NativeMethods.TokenAllAccess,
+                    nint.Zero,
+                    NativeMethods.SecurityImpersonationLevel.Impersonation,
+                    NativeMethods.TokenType.Primary,
+                    out primaryToken))
+            {
+                return new AgentLaunchResult(
+                    false,
+                    0,
+                    $"Could not duplicate the service token (Win32 error {Marshal.GetLastWin32Error()}).");
+            }
+
+            uint targetSession = sessionId;
+            if (!NativeMethods.SetTokenInformation(
+                    primaryToken,
+                    NativeMethods.TokenSessionIdClass,
+                    ref targetSession,
+                    sizeof(uint)))
+            {
+                return new AgentLaunchResult(
+                    false,
+                    0,
+                    $"Could not move the token into session {sessionId} (Win32 error {Marshal.GetLastWin32Error()}). " +
+                    "This needs the service to run as LocalSystem.");
+            }
+
+            return StartWithToken(primaryToken, sessionId, executablePath, extraEnvironment, "the desktop agent");
+        }
+        finally
+        {
+            if (primaryToken != nint.Zero)
+            {
+                NativeMethods.CloseHandle(primaryToken);
+            }
+
+            if (serviceToken != nint.Zero)
+            {
+                NativeMethods.CloseHandle(serviceToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates the process from a primary token already bound to the target session.
+    /// </summary>
+    private AgentLaunchResult StartWithToken(
+        nint primaryToken,
+        uint sessionId,
+        string executablePath,
+        IReadOnlyDictionary<string, string> extraEnvironment,
+        string what)
+    {
+        nint environment = nint.Zero;
+        nint customEnvironment = nint.Zero;
+
+        try
+        {
             if (!NativeMethods.CreateEnvironmentBlock(out environment, primaryToken, false))
             {
                 _logger.LogWarning(
@@ -166,7 +283,8 @@ public sealed class SessionAgentLauncher
             NativeMethods.CloseHandle(processInfo.Process);
 
             _logger.LogInformation(
-                "Started the session agent in session {SessionId} (pid {ProcessId}).",
+                "Started {What} in session {SessionId} (pid {ProcessId}).",
+                what,
                 sessionId,
                 processInfo.ProcessId);
 
@@ -182,16 +300,6 @@ public sealed class SessionAgentLauncher
             if (environment != nint.Zero)
             {
                 NativeMethods.DestroyEnvironmentBlock(environment);
-            }
-
-            if (primaryToken != nint.Zero)
-            {
-                NativeMethods.CloseHandle(primaryToken);
-            }
-
-            if (userToken != nint.Zero)
-            {
-                NativeMethods.CloseHandle(userToken);
             }
         }
     }

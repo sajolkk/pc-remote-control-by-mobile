@@ -16,13 +16,15 @@ namespace RemoteAgent.Ipc;
 /// <param name="Commands">Commands this agent implements.</param>
 /// <param name="Capabilities">Capabilities it probed in its session.</param>
 /// <param name="ConnectedAt">When the handshake completed.</param>
+/// <param name="Kind">Which share of the session's work it does.</param>
 public sealed record ConnectedAgent(
     int SessionId,
     string UserName,
     IpcConnection Connection,
     IReadOnlySet<string> Commands,
     IReadOnlyList<string> Capabilities,
-    DateTimeOffset ConnectedAt);
+    DateTimeOffset ConnectedAt,
+    SessionAgentKind Kind = SessionAgentKind.Full);
 
 /// <summary>
 /// Accepts session-agent connections and routes forwarded commands to them (§3).
@@ -39,6 +41,10 @@ public sealed record ConnectedAgent(
 /// the service tells this registry, so a command never lands on a disconnected session's
 /// desktop where nobody would see it.</para>
 ///
+/// <para>A session can have two agents, a user agent and a desktop agent (see
+/// <see cref="SessionAgentKind"/>), which implement disjoint sets of commands. Each command goes to
+/// whichever of the session's agents implements it.</para>
+///
 /// <para>Authentication is the one-time spawn token. The pipe must be openable by
 /// interactive users (see <see cref="IpcPipe"/>), so the token is what actually proves the
 /// peer is the process this service launched. A connection that does not present a valid,
@@ -50,8 +56,8 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ForwardTimeout = TimeSpan.FromSeconds(30);
 
-    private readonly ConcurrentDictionary<int, ConnectedAgent> _agents = new();
-    private readonly ConcurrentDictionary<int, string> _spawnTokens = new();
+    private readonly ConcurrentDictionary<(int SessionId, SessionAgentKind Kind), ConnectedAgent> _agents = new();
+    private readonly ConcurrentDictionary<(int SessionId, SessionAgentKind Kind), string> _spawnTokens = new();
     private readonly ILogger<SessionAgentRegistry> _logger;
     private readonly CancellationTokenSource _lifetime = new();
 
@@ -91,10 +97,17 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
     public Func<IpcRequest, CancellationToken, Task<IpcResponse>>? AgentRequestHandler { get; set; }
 
     /// <inheritdoc />
-    public bool IsConnected => TryGetActiveAgent(out _);
+    public bool IsConnected => GetActiveAgents().Count > 0;
 
-    /// <summary>The agent serving the active console session, if any.</summary>
-    public ConnectedAgent? ActiveAgent => TryGetActiveAgent(out ConnectedAgent? agent) ? agent : null;
+    /// <summary>
+    /// The agent that runs as the signed-in user in the active console session, if any: the one
+    /// that can show the tray icon and pairing prompts. A desktop agent alone does not count.
+    /// </summary>
+    public ConnectedAgent? ActiveAgent =>
+        GetActiveAgents().FirstOrDefault(static a => a.Kind != SessionAgentKind.Desktop);
+
+    /// <summary>Every agent serving the active console session.</summary>
+    public IReadOnlyList<ConnectedAgent> ActiveAgents => GetActiveAgents();
 
     /// <summary>Every connected agent, for the UI's status view.</summary>
     public IReadOnlyCollection<ConnectedAgent> All => _agents.Values.ToArray();
@@ -115,12 +128,16 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
     /// Any previous unused token for that session is replaced, so a spawn that failed
     /// halfway cannot leave a valid credential lying around indefinitely.
     /// </remarks>
-    public string IssueSpawnToken(int sessionId)
+    public string IssueSpawnToken(int sessionId, SessionAgentKind kind = SessionAgentKind.Full)
     {
         string token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        _spawnTokens[sessionId] = token;
+        _spawnTokens[(sessionId, kind)] = token;
         return token;
     }
+
+    /// <summary>Whether an agent of that kind is connected for that session.</summary>
+    public bool IsAgentConnected(int sessionId, SessionAgentKind kind) =>
+        _agents.TryGetValue((sessionId, kind), out ConnectedAgent? agent) && agent.Connection.IsConnected;
 
     /// <summary>Starts accepting agent connections.</summary>
     public void Start()
@@ -137,17 +154,29 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(caller);
 
-        if (!TryGetActiveAgent(out ConnectedAgent? agent) || agent is null)
+        IReadOnlyList<ConnectedAgent> agents = GetActiveAgents();
+        if (agents.Count == 0)
         {
             return CommandResult.SessionUnavailable();
         }
 
-        // A command the agent does not implement is reported as unsupported rather than
-        // sent and silently failed — this is how a PC with a reduced feature set stays
-        // honest about what it can do (§0).
-        if (agent.Commands.Count > 0 && !agent.Commands.Contains(command))
+        ConnectedAgent? agent = agents.FirstOrDefault(a => a.Commands.Contains(command)) ??
+                                agents.FirstOrDefault(static a => a.Commands.Count == 0);
+
+        if (agent is null)
         {
-            return CommandResult.NotSupported($"the '{command}' command");
+            // Half of a split pair is missing: the user agent while nobody is signed in, or either
+            // one while it restarts. The command is not unsupported, just unavailable right now.
+            bool complete = agents.Any(static a => a.Kind == SessionAgentKind.Full) ||
+                            (agents.Any(static a => a.Kind == SessionAgentKind.User) &&
+                             agents.Any(static a => a.Kind == SessionAgentKind.Desktop));
+
+            // A command no agent implements is reported as unsupported rather than sent and
+            // silently failed — this is how a PC with a reduced feature set stays honest about
+            // what it can do (§0).
+            return complete
+                ? CommandResult.NotSupported($"the '{command}' command")
+                : CommandResult.SessionUnavailable();
         }
 
         var request = new IpcRequest
@@ -179,18 +208,16 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             : CommandResult.Fail(response.Error);
     }
 
-    /// <summary>Asks the active agent to release every held key and mouse button.</summary>
+    /// <summary>Asks the active session's agents to release every held key and mouse button.</summary>
     public async Task ReleaseInputAsync(CancellationToken cancellationToken)
     {
-        if (!TryGetActiveAgent(out ConnectedAgent? agent) || agent is null)
+        foreach (ConnectedAgent agent in GetActiveAgents())
         {
-            return;
+            await agent.Connection.SendRequestAsync(
+                new IpcRequest { Id = Guid.NewGuid().ToString("n"), Command = IpcCommands.ReleaseInput },
+                TimeSpan.FromSeconds(5),
+                cancellationToken).ConfigureAwait(false);
         }
-
-        await agent.Connection.SendRequestAsync(
-            new IpcRequest { Id = Guid.NewGuid().ToString("n"), Command = IpcCommands.ReleaseInput },
-            TimeSpan.FromSeconds(5),
-            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -227,34 +254,31 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
         }
     }
 
-    private bool TryGetActiveAgent(out ConnectedAgent? agent)
+    private List<ConnectedAgent> GetActiveAgents()
     {
-        agent = null;
+        ConnectedAgent[] connected = _agents.Values.Where(static a => a.Connection.IsConnected).ToArray();
         int sessionId = _activeSessionId;
 
-        if (sessionId != NoActiveSession && _agents.TryGetValue(sessionId, out ConnectedAgent? found) &&
-            found.Connection.IsConnected)
+        if (sessionId != NoActiveSession)
         {
-            agent = found;
-            return true;
-        }
-
-        // Fallback: exactly one agent connected and no console session reported yet. This
-        // covers the startup window before the first session notification arrives, and
-        // console-less configurations. With more than one agent it is refused rather than
-        // guessed — sending a keystroke to the wrong user's desktop is not a mistake worth
-        // risking.
-        if (_agents.Count == 1)
-        {
-            ConnectedAgent only = _agents.Values.First();
-            if (only.Connection.IsConnected)
+            List<ConnectedAgent> inSession = connected.Where(a => a.SessionId == sessionId).ToList();
+            if (inSession.Count > 0)
             {
-                agent = only;
-                return true;
+                return inSession;
             }
         }
 
-        return false;
+        // Fallback: every connected agent serves one session and no console session is reported
+        // yet. This covers the startup window before the first session notification arrives, and
+        // console-less configurations. With agents in more than one session it is refused rather
+        // than guessed — sending a keystroke to the wrong user's desktop is not a mistake worth
+        // risking.
+        if (connected.Length > 0 && connected.All(a => a.SessionId == connected[0].SessionId))
+        {
+            return [.. connected];
+        }
+
+        return [];
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
@@ -398,32 +422,42 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             connection,
             result.Commands.ToHashSet(StringComparer.Ordinal),
             result.Capabilities,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            SessionAgentKinds.Parse(result.Kind));
+
+        (int, SessionAgentKind) key = (agent.SessionId, agent.Kind);
 
         // Replace any stale agent for the same session: after a crash-and-respawn the old
         // connection may not have been noticed as dead yet.
-        if (_agents.TryRemove(agent.SessionId, out ConnectedAgent? previous))
+        if (_agents.TryRemove(key, out ConnectedAgent? previous))
         {
-            _logger.LogInformation("Replacing a previous agent connection for session {SessionId}.", agent.SessionId);
+            _logger.LogInformation(
+                "Replacing a previous {Kind} agent connection for session {SessionId}.",
+                agent.Kind,
+                agent.SessionId);
             await previous.Connection.DisposeAsync().ConfigureAwait(false);
         }
 
-        _agents[agent.SessionId] = agent;
+        _agents[key] = agent;
 
         connection.Closed += (_, _) =>
         {
-            if (_agents.TryGetValue(agent.SessionId, out ConnectedAgent? current) &&
+            if (_agents.TryGetValue(key, out ConnectedAgent? current) &&
                 ReferenceEquals(current, agent))
             {
-                _agents.TryRemove(agent.SessionId, out _);
-                _logger.LogInformation("Session agent for session {SessionId} disconnected.", agent.SessionId);
+                _agents.TryRemove(key, out _);
+                _logger.LogInformation(
+                    "The {Kind} agent for session {SessionId} disconnected.",
+                    agent.Kind,
+                    agent.SessionId);
                 AgentDisconnected?.Invoke(this, agent.SessionId);
             }
         };
 
         _logger.LogInformation(
-            "Session agent connected. Session={SessionId} User={User} Version={Version} " +
+            "Session agent connected. Kind={Kind} Session={SessionId} User={User} Version={Version} " +
             "Commands={CommandCount} Capabilities={Capabilities}",
+            agent.Kind,
             agent.SessionId,
             agent.UserName,
             result.AgentVersion,
@@ -449,11 +483,16 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             return false;
         }
 
-        if (!_spawnTokens.TryGetValue(hello.SessionId, out string? expected))
+        // Looked up by the kind the agent claims, so a token issued for the user's own agent can
+        // never register a process as the SYSTEM desktop agent, or the other way round.
+        (int, SessionAgentKind) key = (hello.SessionId, SessionAgentKinds.Parse(hello.Kind));
+
+        if (!_spawnTokens.TryGetValue(key, out string? expected))
         {
             _logger.LogWarning(
-                "An agent claimed session {SessionId}, for which no spawn token was issued.",
-                hello.SessionId);
+                "An agent claimed session {SessionId} ({Kind}), for which no spawn token was issued.",
+                hello.SessionId,
+                key.Item2);
             return false;
         }
 
@@ -469,7 +508,7 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             return false;
         }
 
-        _spawnTokens.TryRemove(hello.SessionId, out _);
+        _spawnTokens.TryRemove(key, out _);
         return true;
     }
 

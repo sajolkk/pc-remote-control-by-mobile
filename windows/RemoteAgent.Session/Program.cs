@@ -19,6 +19,7 @@ using RemoteAgent.Windows.Display;
 using RemoteAgent.Windows.Files;
 using RemoteAgent.Windows.Input;
 using RemoteAgent.Windows.Media;
+using RemoteAgent.Windows.Session;
 using RemoteAgent.Windows.Shell;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -38,9 +39,13 @@ namespace RemoteAgent.Session;
 /// hand, such as from the Start-menu shortcut, has no token and never becomes an agent: it only
 /// asks the running agent to show its pairing window, then exits (<see cref="LauncherMode"/>).</para>
 ///
-/// <para>It runs at the user's own integrity level and never asks for elevation. The visible
-/// consequence — that injected input cannot reach elevated windows — is documented in the
-/// manifest rather than worked around (§12.1).</para>
+/// <para>Installed, the service starts this executable twice per session (see
+/// <see cref="SessionAgentKind"/>). The <em>user</em> agent runs at the user's own integrity level,
+/// never asks for elevation, and does applications, files, windows, the browser, the tray icon and
+/// pairing prompts. The <em>desktop</em> agent runs as SYSTEM and does screen and input only, which
+/// is what lets the lock screen, the sign-in screen and UAC prompts be seen and used from the phone
+/// (§12.1). In portable mode one <em>full</em> agent does everything at the user's rights, and the
+/// secure desktop stays out of reach there.</para>
 /// </remarks>
 [SupportedOSPlatform("windows")]
 public static class Program
@@ -49,6 +54,7 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         AgentPaths paths = AgentPaths.Resolve();
+        SessionAgentKind kind = ServiceChannelClient.ReadAgentKind();
 
         // Same logging setup and same redaction rules as the service, from the shared project:
         // a separate file so the two halves can be read independently, identical rules so neither
@@ -58,7 +64,7 @@ public static class Program
             minimumLevel: "Information",
             retainDays: 14,
             toConsole: false,
-            componentName: "session",
+            componentName: kind == SessionAgentKind.Desktop ? "desktop" : "session",
             logsDirectory: ResolveLogsDirectory(paths));
 
         try
@@ -75,11 +81,12 @@ public static class Program
             string userName = ResolveUserName();
 
             Log.Information(
-                "Session agent starting for session {SessionId} as {User}.",
+                "Session agent ({Kind}) starting for session {SessionId} as {User}.",
+                kind,
                 spawn.Value.SessionId,
                 userName);
 
-            IHost host = BuildHost(args, spawn.Value.Token, spawn.Value.SessionId, userName);
+            IHost host = BuildHost(args, spawn.Value.Token, spawn.Value.SessionId, userName, kind);
             await host.RunAsync().ConfigureAwait(false);
             return 0;
         }
@@ -94,7 +101,7 @@ public static class Program
         }
     }
 
-    private static IHost BuildHost(string[] args, string token, int sessionId, string userName)
+    private static IHost BuildHost(string[] args, string token, int sessionId, string userName, SessionAgentKind kind)
     {
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 
@@ -127,6 +134,11 @@ public static class Program
 
         // --- Screen streaming (Phase 3). Capture and encode are platform code; the pipeline and
         //     WebRTC transport are platform-neutral and live in RemoteAgent.Streaming. ---
+
+        // Only the desktop agent runs as SYSTEM, and only it can follow input onto the lock screen.
+        builder.Services.AddSingleton(provider => new InputDesktopSwitcher(
+            kind == SessionAgentKind.Desktop,
+            provider.GetRequiredService<ILogger<InputDesktopSwitcher>>()));
 
         builder.Services.AddSingleton<IMonitorProvider, DxgiMonitorProvider>();
         builder.Services.AddSingleton<IScreenCaptureFactory, DesktopDuplicationCaptureFactory>();
@@ -198,7 +210,7 @@ public static class Program
 
         builder.Services.AddSingleton<IAuthorizationGate, AuthorizationGate>();
 
-        RegisterHandlers(builder.Services);
+        RegisterHandlers(builder.Services, kind);
 
         builder.Services.AddSingleton(provider => new CommandRegistry(
             AgentRole.Session,
@@ -220,7 +232,8 @@ public static class Program
             token,
             sessionId,
             userName,
-            typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0"));
+            typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+            kind));
 
         builder.Services.AddHostedService<SessionAgentHostedService>();
 
@@ -237,23 +250,29 @@ public static class Program
     /// Registers the commands this host implements.
     /// </summary>
     /// <remarks>
-    /// Explicit, like the service's list, so that a remotely reachable command cannot appear merely
-    /// because a type was added to the assembly (§13 rule 5).
+    /// <para>Explicit, like the service's list, so that a remotely reachable command cannot appear
+    /// merely because a type was added to the assembly (§13 rule 5).</para>
+    ///
+    /// <para>Split by kind, and the two halves never overlap: the service routes each command to the
+    /// one agent that implements it. Screen and input go to the desktop agent; everything else stays
+    /// at the user's rights, because a file opened or an app launched by a SYSTEM process would run
+    /// with rights the signed-in user does not have.</para>
     /// </remarks>
-    private static void RegisterHandlers(IServiceCollection services)
+    private static void RegisterHandlers(IServiceCollection services, SessionAgentKind kind)
     {
-        services.AddSingleton<ICommandHandler, AppListHandler>();
-        services.AddSingleton<ICommandHandler, AppLaunchHandler>();
-        services.AddSingleton<ICommandHandler, AppFocusHandler>();
-        services.AddSingleton<ICommandHandler, AppCloseHandler>();
+        if (kind != SessionAgentKind.User)
+        {
+            RegisterDesktopHandlers(services);
+        }
 
-        services.AddSingleton<ICommandHandler, BrowserListHandler>();
-        services.AddSingleton<ICommandHandler, BrowserOpenHandler>();
-        services.AddSingleton<ICommandHandler, BrowserOpenUrlHandler>();
-        services.AddSingleton<ICommandHandler, BrowserCloseHandler>();
+        if (kind != SessionAgentKind.Desktop)
+        {
+            RegisterUserHandlers(services);
+        }
+    }
 
-        services.AddSingleton<ICommandHandler, SessionLockHandler>();
-
+    private static void RegisterDesktopHandlers(IServiceCollection services)
+    {
         services.AddSingleton<ICommandHandler, ScreenMonitorListHandler>();
         services.AddSingleton<ICommandHandler, ScreenSelectMonitorHandler>();
         services.AddSingleton<ICommandHandler, ScreenScreenshotHandler>();
@@ -270,6 +289,21 @@ public static class Program
         services.AddSingleton<ICommandHandler, InputTextHandler>();
         services.AddSingleton<ICommandHandler, InputShortcutHandler>();
         services.AddSingleton<ICommandHandler, InputReleaseAllHandler>();
+    }
+
+    private static void RegisterUserHandlers(IServiceCollection services)
+    {
+        services.AddSingleton<ICommandHandler, AppListHandler>();
+        services.AddSingleton<ICommandHandler, AppLaunchHandler>();
+        services.AddSingleton<ICommandHandler, AppFocusHandler>();
+        services.AddSingleton<ICommandHandler, AppCloseHandler>();
+
+        services.AddSingleton<ICommandHandler, BrowserListHandler>();
+        services.AddSingleton<ICommandHandler, BrowserOpenHandler>();
+        services.AddSingleton<ICommandHandler, BrowserOpenUrlHandler>();
+        services.AddSingleton<ICommandHandler, BrowserCloseHandler>();
+
+        services.AddSingleton<ICommandHandler, SessionLockHandler>();
 
         services.AddSingleton<ICommandHandler, WindowListHandler>();
         services.AddSingleton<ICommandHandler, WindowActionHandler>();

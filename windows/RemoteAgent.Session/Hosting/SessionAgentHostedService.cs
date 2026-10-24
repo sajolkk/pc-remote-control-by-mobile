@@ -38,6 +38,12 @@ namespace RemoteAgent.Session.Hosting;
 /// phone asking is the fourth, and the least important: the cases that matter are the ones where
 /// it can no longer ask.</para>
 ///
+/// <para><b>The desktop agent does less.</b> Running as SYSTEM for screen and input only (see
+/// <see cref="SessionAgentKind"/>), it shows no tray icon or windows, reports only screen and input
+/// capabilities, and does not refuse input while the PC is locked — the lock screen is something it
+/// can show and type into. The user agent, in turn, reports no screen or input capabilities and
+/// leaves display changes to the desktop agent.</para>
+///
 /// <para><b>Permissions are re-checked here</b> even though the service already authorized the
 /// call. The service is trusted, but a second check costs nothing and means a routing bug in
 /// another process cannot become an unauthorized action on this desktop.</para>
@@ -65,6 +71,9 @@ public sealed class SessionAgentHostedService : BackgroundService
     private readonly ServiceFilePolicy _filePolicy;
 
     private bool _sessionSwitchHooked;
+    private SessionAgentKind Kind => _channel.Kind;
+    private bool DoesScreenAndInput => Kind != SessionAgentKind.User;
+    private bool DoesUserWork => Kind != SessionAgentKind.Desktop;
     private TrayIcon? _tray;
     private PairingQrWindow? _qrWindow;
     private DevicesWindow? _devicesWindow;
@@ -124,15 +133,22 @@ public sealed class SessionAgentHostedService : BackgroundService
             _channel.Disconnected += OnServiceDisconnected;
 
             HookSessionSwitch();
-            await CreateTrayAsync(stoppingToken).ConfigureAwait(false);
-            _ = ListenForShowRequestsAsync(stoppingToken);
 
-            // Keeps the allowed file roots in step with the service's configuration. It waits for
-            // the channel by itself, so it can start before the connection exists.
-            _ = _filePolicy.RunAsync(stoppingToken);
+            // The tray icon, the pairing windows and file access belong to the signed-in user. The
+            // desktop agent runs as SYSTEM and must never put a window of its own in front of them.
+            if (DoesUserWork)
+            {
+                await CreateTrayAsync(stoppingToken).ConfigureAwait(false);
+                _ = ListenForShowRequestsAsync(stoppingToken);
+
+                // Keeps the allowed file roots in step with the service's configuration. It waits
+                // for the channel by itself, so it can start before the connection exists.
+                _ = _filePolicy.RunAsync(stoppingToken);
+            }
 
             _logger.LogInformation(
-                "Session agent starting. Commands={CommandCount} Capabilities={Capabilities}",
+                "Session agent starting. Kind={Kind} Commands={CommandCount} Capabilities={Capabilities}",
+                Kind,
                 _channel.ImplementedCommands.Count,
                 string.Join(",", _channel.Capabilities));
 
@@ -665,6 +681,26 @@ public sealed class SessionAgentHostedService : BackgroundService
     {
         var capabilities = new List<string>();
 
+        if (DoesScreenAndInput)
+        {
+            List<string> screen = ProbeScreenCapabilities().ToList();
+            capabilities.AddRange(screen);
+            capabilities.AddRange(ProbeInputCapabilities());
+
+            // The desktop agent follows Windows onto the lock screen, the sign-in screen and UAC
+            // prompts. Said out loud so the phone can offer to unlock instead of explaining why
+            // it cannot.
+            if (Kind == SessionAgentKind.Desktop && screen.Contains(CapabilityNames.ScreenCapture))
+            {
+                capabilities.Add(CapabilityNames.SecureDesktop);
+            }
+        }
+
+        if (!DoesUserWork)
+        {
+            return capabilities;
+        }
+
         try
         {
             AppListResult apps = await _catalog
@@ -698,8 +734,7 @@ public sealed class SessionAgentHostedService : BackgroundService
             _logger.LogWarning(ex, "Browsers could not be detected; browser control is not advertised.");
         }
 
-        capabilities.AddRange(ProbeScreenCapabilities());
-        capabilities.AddRange(ProbeControlCapabilities());
+        capabilities.AddRange(ProbeShellCapabilities());
 
         // Clipboard and volume are declared in the protocol but not implemented in this build, so
         // they are deliberately not advertised.
@@ -707,17 +742,16 @@ public sealed class SessionAgentHostedService : BackgroundService
     }
 
     /// <summary>
-    /// Reports input, window management and file management, each only if it works here.
+    /// Reports mouse and keyboard input, if it works here.
     /// </summary>
     /// <remarks>
-    /// The probes are read-only: nothing is injected, moved or opened to find out. Input is
-    /// advertised when the desktop reports a non-empty virtual screen to inject into — the same
-    /// query every absolute move depends on. A locked desktop still counts, for the reason a locked
-    /// desktop still counts for capture: the capability describes the PC, and the locked state
-    /// reaches the phone separately. File management is advertised because it is implemented; the
-    /// service removes it again if configuration leaves it no roots.
+    /// The probe is read-only: nothing is injected to find out. Input is advertised when the
+    /// desktop reports a non-empty virtual screen to inject into — the same query every absolute
+    /// move depends on. A locked desktop still counts, for the reason a locked desktop still counts
+    /// for capture: the capability describes the PC, and the locked state reaches the phone
+    /// separately.
     /// </remarks>
-    private IEnumerable<string> ProbeControlCapabilities()
+    private IEnumerable<string> ProbeInputCapabilities()
     {
         var capabilities = new List<string>();
 
@@ -738,6 +772,21 @@ public sealed class SessionAgentHostedService : BackgroundService
         {
             _logger.LogWarning(ex, "Input injection is unavailable; remote input is not advertised.");
         }
+
+        return capabilities;
+    }
+
+    /// <summary>
+    /// Reports window management and file management, each only if it works here.
+    /// </summary>
+    /// <remarks>
+    /// Read-only, like the input probe: nothing is moved or opened to find out. File management is
+    /// advertised because it is implemented; the service removes it again if configuration leaves
+    /// it no roots.
+    /// </remarks>
+    private IEnumerable<string> ProbeShellCapabilities()
+    {
+        var capabilities = new List<string>();
 
         try
         {
@@ -903,7 +952,14 @@ public sealed class SessionAgentHostedService : BackgroundService
         try
         {
             SystemEvents.SessionSwitch += OnSessionSwitch;
-            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
+            // Display changes matter to whoever captures and injects; with two agents only one of
+            // them announces each change.
+            if (DoesScreenAndInput)
+            {
+                SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+            }
+
             _sessionSwitchHooked = true;
         }
         catch (Exception ex) when (ex is InvalidOperationException or ExternalException)
@@ -971,11 +1027,19 @@ public sealed class SessionAgentHostedService : BackgroundService
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     {
         // Leaving the desktop by any route releases held input before anything else is done about
-        // it. A lock additionally refuses further input until the matching unlock.
+        // it. A lock additionally refuses further input until the matching unlock — except in the
+        // desktop agent, which follows input onto the lock screen so the phone can unlock the PC.
         switch (e.Reason)
         {
+            case SessionSwitchReason.SessionLock when Kind == SessionAgentKind.Desktop:
+                _input.ReleaseEverything("the session locked");
+                break;
+
             case SessionSwitchReason.SessionLock:
                 _input.OnSessionLocked();
+                break;
+
+            case SessionSwitchReason.SessionUnlock when Kind == SessionAgentKind.Desktop:
                 break;
 
             case SessionSwitchReason.SessionUnlock:
@@ -999,7 +1063,9 @@ public sealed class SessionAgentHostedService : BackgroundService
             _ => null,
         };
 
-        if (locked is null)
+        // Lock state is reported once per session, by the agent that runs as the user. The desktop
+        // agent may be the only one (nobody signed in), and then there is no lock to report.
+        if (locked is null || !DoesUserWork)
         {
             return;
         }

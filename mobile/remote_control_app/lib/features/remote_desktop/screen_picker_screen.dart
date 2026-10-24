@@ -33,7 +33,7 @@ class ScreenPickerScreen extends ConsumerWidget {
           final sorted = [...pcs]..sort((a, b) {
               final aUp = manager.statusOf(a.deviceId).isConnected ? 0 : 1;
               final bUp = manager.statusOf(b.deviceId).isConnected ? 0 : 1;
-              return aUp != bUp ? aUp - bUp : a.deviceName.compareTo(b.deviceName);
+              return aUp != bUp ? aUp - bUp : a.displayName.compareTo(b.displayName);
             });
 
           return ListView(
@@ -113,7 +113,7 @@ class _PcTile extends StatelessWidget {
           color: connected ? scheme.primary : scheme.outline,
           size: 32,
         ),
-        title: Text(pc.deviceName),
+        title: Text(pc.displayName),
         subtitle: Text(_subtitle()),
         onTap: connected ? onOpen : null,
         trailing: busy

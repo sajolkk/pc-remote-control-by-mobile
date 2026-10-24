@@ -383,8 +383,11 @@ This path is newer than LAN use and has had less testing; reports are welcome.
 
 ### What Windows does not allow
 
-Any ordinary app, this one included, cannot see or control the lock screen or a UAC prompt, cannot
-send Ctrl+Alt+Del, and cannot click inside a window that is running as administrator.
+Installed with the setup program, PC-Remote can show and control the lock screen, the sign-in screen
+and UAC prompts: tap or press a key on the lock screen to bring up the password box, then type with
+the keyboard button. It still cannot send Ctrl+Alt+Del, so a PC set to require Ctrl+Alt+Del before
+signing in has to be unlocked at the PC. The portable version runs as you, not as SYSTEM, and cannot
+see or control any of those screens, or click inside a window running as administrator.
 
 ---
 
@@ -401,7 +404,7 @@ send Ctrl+Alt+Del, and cannot click inside a window that is running as administr
 | QR scan says it cannot reach the PC | Firewall: install with `--install`, or allow the prompt in console mode, and check the network is Private |
 | Fingerprint mismatch after reinstalling Windows or deleting the data folder | The PC has a new identity. Remove it from the app and pair again |
 | **Screen** says "Nobody is signed in" | Streaming needs a signed-in desktop. Sign in at the PC; power controls still work meanwhile |
-| **Screen** says the PC is locked | Windows does not allow the lock screen or UAC prompts to be captured by any app. Unlock at the PC; the picture comes back by itself. Remote unlock is deliberately not possible |
+| **Screen** says the PC is locked | The PC is running the portable version, or a version older than lock-screen support. Install or update PC-Remote with the setup program. Until then, unlock at the PC; the picture comes back by itself |
 | **Screen** says the PC cannot stream | No usable H.264 encoder (Windows "N" editions need the Media Feature Pack) or a display driver without screen capture. The session agent's log says which |
 | **Screen** stays on "Connecting video…" | UDP 47810–47850 blocked. Check the "PC-Remote screen streaming (UDP)" firewall rule exists, or allow the Windows prompt |
 | Stream looks soft or says **Degraded** | Weak Wi-Fi or a busy PC. The stream lowers quality by itself and recovers after about 10 clean seconds. Moving closer to the router helps most |

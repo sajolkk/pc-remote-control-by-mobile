@@ -139,6 +139,12 @@ public static class CapabilityNames
     /// <summary>More than one monitor is attached.</summary>
     public const string MultiMonitor = "screen.multi_monitor";
 
+    /// <summary>
+    /// The lock screen, the sign-in screen and UAC prompts can be viewed and controlled, because
+    /// screen and input run in a desktop agent with SYSTEM rights.
+    /// </summary>
+    public const string SecureDesktop = "screen.secure_desktop";
+
     /// <summary>Remote input injection is available. Superseded by the two specific names below.</summary>
     public const string Input = "input";
 

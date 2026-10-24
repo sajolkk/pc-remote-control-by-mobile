@@ -87,6 +87,20 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool WTSQueryUserToken(uint sessionId, out nint token);
 
+    /// <summary>TokenSessionId in the TOKEN_INFORMATION_CLASS enumeration.</summary>
+    internal const int TokenSessionIdClass = 12;
+
+    /// <summary>
+    /// Changes a token's session id. Requires SeTcbPrivilege, which only SYSTEM holds.
+    /// </summary>
+    [LibraryImport("advapi32.dll", EntryPoint = "SetTokenInformation", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetTokenInformation(
+        nint token,
+        int informationClass,
+        ref uint information,
+        uint informationLength);
+
     [LibraryImport("advapi32.dll", EntryPoint = "DuplicateTokenEx", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool DuplicateTokenEx(

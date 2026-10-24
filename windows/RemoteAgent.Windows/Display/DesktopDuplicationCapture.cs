@@ -3,6 +3,7 @@ using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using RemoteAgent.Core.Abstractions;
 using RemoteAgent.Protocol.Messages;
+using RemoteAgent.Windows.Session;
 using SharpGen.Runtime;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
@@ -17,17 +18,31 @@ namespace RemoteAgent.Windows.Display;
 public sealed class DesktopDuplicationCaptureFactory : IScreenCaptureFactory
 {
     private readonly ILogger<DesktopDuplicationCapture> _logger;
+    private readonly InputDesktopSwitcher? _desktops;
 
     /// <summary>Creates the factory.</summary>
-    public DesktopDuplicationCaptureFactory(ILogger<DesktopDuplicationCapture> logger)
+    /// <param name="logger">Diagnostic sink.</param>
+    /// <param name="desktops">
+    /// In the desktop agent, moves the capturing thread onto the lock screen or a UAC prompt when
+    /// one of those holds the display, so that it is captured instead of reported as unavailable.
+    /// </param>
+    public DesktopDuplicationCaptureFactory(
+        ILogger<DesktopDuplicationCapture> logger,
+        InputDesktopSwitcher? desktops = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _desktops = desktops;
     }
 
     /// <inheritdoc />
     public IScreenCapture Open(string monitorId)
     {
         ArgumentException.ThrowIfNullOrEmpty(monitorId);
+
+        // Duplication captures the desktop the calling thread is attached to. Following the input
+        // desktop here is what makes the lock screen visible; a capture opened on the user's
+        // desktop is lost as soon as Windows switches away, and the reopen lands here again.
+        _desktops?.AttachCurrentThread();
 
         List<DxgiOutputEntry> outputs;
         try

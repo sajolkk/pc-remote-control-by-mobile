@@ -72,7 +72,7 @@ class SettingsScreen extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Permissions on ${status.pc?.deviceName ?? 'this PC'}',
+                      'Permissions on ${status.pc?.displayName ?? 'this PC'}',
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
                     const SizedBox(height: 4),
@@ -150,7 +150,7 @@ class SettingsScreen extends ConsumerWidget {
                 ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('About remote unlock'),
-                  subtitle: const Text('Why the PC cannot be unlocked from here'),
+                  subtitle: const Text('Unlocking the PC from this phone'),
                   onTap: () => _showUnlockExplanation(context),
                 ),
                 const Divider(height: 1),
@@ -181,6 +181,7 @@ class SettingsScreen extends ConsumerWidget {
   static String _capabilityLabel(String capability) => switch (capability) {
         Capabilities.screenCapture => 'Screen view',
         Capabilities.multiMonitor => 'Multiple monitors',
+        Capabilities.secureDesktop => 'Lock screen and sign-in',
         Capabilities.input => 'Mouse and keyboard',
         Capabilities.apps => 'Apps',
         Capabilities.browser => 'Browser',
@@ -204,17 +205,18 @@ class SettingsScreen extends ConsumerWidget {
         title: const Text('Remote unlock'),
         content: const SingleChildScrollView(
           child: Text(
-            'This app can lock your PC, but it cannot unlock it.\n\n'
-            'Windows puts the lock screen on a separate, protected desktop that no ordinary '
-            'application can draw on or send input to. That is a deliberate security boundary: '
-            'it is what stops any program on your PC from capturing your password.\n\n'
-            'The only sanctioned way to sign in from another device is a Windows Credential '
-            'Provider — a component loaded by the Windows logon screen itself. Building one is a '
-            'separate, higher-risk project, and this app deliberately does not attempt it.\n\n'
-            'What this app will never do: store your Windows password, or type it for you. Both '
-            'would defeat the protection above rather than work with it.\n\n'
-            'So: lock, sleep, restart, shut down and wake all work remotely. Unlocking needs you '
-            'at the PC.',
+            'Windows puts the lock screen, the sign-in screen and UAC prompts on a separate, '
+            'protected desktop that ordinary programs cannot see or send input to.\n\n'
+            'When PC-Remote is installed on the PC (not the portable version), its service runs '
+            'screen and input with SYSTEM rights, which can. Open the Screen tab while the PC is '
+            'locked: tap or press a key to show the password box, then type your PIN or password '
+            'with the keyboard button, exactly as you would at the PC.\n\n'
+            'What this app never does: store your Windows password, or type it for you. You type '
+            'it each time, and it goes to the PC only over the encrypted connection to a PC you '
+            'paired.\n\n'
+            'Seeing the lock screen needs "View screen" and typing into it needs "Control mouse and '
+            'keyboard" — the same permissions as the desktop itself. A PC running an older version '
+            'of PC-Remote cannot do this until it is updated.',
           ),
         ),
         actions: [

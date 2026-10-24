@@ -17,6 +17,7 @@ class PairedPc {
     this.permissions = const [],
     this.remoteAddress,
     this.remotePort,
+    this.nickname,
   });
 
   factory PairedPc.fromJson(Map<String, dynamic> json) => PairedPc(
@@ -35,6 +36,9 @@ class PairedPc {
         // as the user never having entered one.
         remoteAddress: _nonEmpty(json['remoteAddress']),
         remotePort: _port(json['remotePort']),
+
+        // Absent from records written before PCs could be renamed: the PC's own name is used.
+        nickname: _nonEmpty(json['nickname']),
       );
 
   static String? _nonEmpty(Object? value) =>
@@ -46,7 +50,18 @@ class PairedPc {
   /// its IP changes.
   final String deviceId;
 
+  /// The name the PC reports for itself (its Windows computer name unless changed on the PC).
+  /// Refreshed at every connection, so it is not where a name chosen on this phone is kept.
   final String deviceName;
+
+  /// A name the user gave this PC on this phone, e.g. "My home PC". Null means use [deviceName].
+  ///
+  /// Kept on the phone only: it changes nothing on the PC, needs no permission there, and
+  /// survives the PC reporting its own name again at every connection.
+  final String? nickname;
+
+  /// The name to show for this PC everywhere in the app.
+  String get displayName => nickname ?? deviceName;
 
   /// The PC's certificate fingerprint, learned from the QR code and pinned from then on.
   final String fingerprint;
@@ -93,6 +108,7 @@ class PairedPc {
         'permissions': permissions,
         if (remoteAddress != null) 'remoteAddress': remoteAddress,
         if (remotePort != null) 'remotePort': remotePort,
+        if (nickname != null) 'nickname': nickname,
       };
 
   PairedPc copyWith({
@@ -113,6 +129,25 @@ class PairedPc {
         permissions: permissions ?? this.permissions,
         remoteAddress: remoteAddress,
         remotePort: remotePort,
+        nickname: nickname,
+      );
+
+  /// A copy with the nickname replaced, or removed when [name] is null or blank, so the PC's
+  /// own name shows again.
+  ///
+  /// Separate from [copyWith] for the reason [withRemoteAddress] is.
+  PairedPc withNickname(String? name) => PairedPc(
+        deviceId: deviceId,
+        deviceName: deviceName,
+        fingerprint: fingerprint,
+        pairedAt: pairedAt,
+        lastAddress: lastAddress,
+        lastPort: lastPort,
+        lastSeenAt: lastSeenAt,
+        permissions: permissions,
+        remoteAddress: remoteAddress,
+        remotePort: remotePort,
+        nickname: _nonEmpty(name),
       );
 
   /// A copy with the remote address replaced, or removed when [remote] is null.
@@ -130,6 +165,7 @@ class PairedPc {
         permissions: permissions,
         remoteAddress: remote?.host,
         remotePort: remote?.port,
+        nickname: nickname,
       );
 }
 
@@ -272,20 +308,25 @@ class PairedPcStore {
 
   /// Saves a record, replacing the one with the same device id.
   ///
-  /// A record arriving without a remote address keeps the one already stored. Pairing again
-  /// builds a fresh record that knows nothing about it, and that must not throw away what the
-  /// user typed. Removing the address is [setRemoteAddress]'s job.
+  /// A record arriving without a remote address or a nickname keeps the one already stored.
+  /// Pairing again builds a fresh record that knows nothing about either, and that must not
+  /// throw away what the user typed. Removing them is [setRemoteAddress]'s and [setNickname]'s
+  /// job.
   Future<void> save(PairedPc pc) => _serialized(() async {
     final all = await getAll();
 
     var toSave = pc;
-    if (pc.remoteAddress == null) {
-      for (final existing in all) {
-        if (existing.deviceId == pc.deviceId && existing.remoteAddress != null) {
-          toSave = pc.withRemoteAddress(
-            RemoteAddress(host: existing.remoteAddress!, port: existing.remotePort),
-          );
-        }
+    for (final existing in all) {
+      if (existing.deviceId != pc.deviceId) continue;
+
+      if (toSave.remoteAddress == null && existing.remoteAddress != null) {
+        toSave = toSave.withRemoteAddress(
+          RemoteAddress(host: existing.remoteAddress!, port: existing.remotePort),
+        );
+      }
+
+      if (toSave.nickname == null && existing.nickname != null) {
+        toSave = toSave.withNickname(existing.nickname);
       }
     }
 
@@ -306,6 +347,27 @@ class PairedPcStore {
     for (final existing in all) {
       if (existing.deviceId == deviceId) {
         updated = existing.withRemoteAddress(remote);
+        next.add(updated);
+      } else {
+        next.add(existing);
+      }
+    }
+
+    if (updated != null) await _write(next);
+    return updated;
+  });
+
+  /// Sets, replaces or (with null or blank) clears the name this phone shows for a PC, leaving
+  /// everything else as stored. Returns the updated record, or null when that PC is not paired.
+  Future<PairedPc?> setNickname(String deviceId, String? nickname) => _serialized(() async {
+    final all = await getAll();
+
+    PairedPc? updated;
+    final next = <PairedPc>[];
+
+    for (final existing in all) {
+      if (existing.deviceId == deviceId) {
+        updated = existing.withNickname(nickname);
         next.add(updated);
       } else {
         next.add(existing);

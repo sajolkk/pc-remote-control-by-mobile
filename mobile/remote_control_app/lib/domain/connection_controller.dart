@@ -213,6 +213,13 @@ class ConnectionController extends ChangeNotifier {
   }
 
   /// Stops connecting and closes any live connection.
+  /// Replaces the stored record this connection shows, e.g. after the user renamed the PC, so
+  /// the new name appears at once rather than at the next connection.
+  void updatePc(PairedPc pc) {
+    if (_status.pc?.deviceId != pc.deviceId) return;
+    _set(_status.copyWith(pc: pc));
+  }
+
   Future<void> disconnect() async {
     _wantConnection = false;
     _attemptId++;
@@ -331,7 +338,7 @@ class ConnectionController extends ChangeNotifier {
 
         _set(_status.copyWith(
           phase: ConnectionPhase.failed,
-          message: '${pc.deviceName} no longer recognises this device. Pair with it again.',
+          message: '${pc.displayName} no longer recognises this device. Pair with it again.',
           requiresRepair: true,
         ));
         return;
@@ -364,10 +371,10 @@ class ConnectionController extends ChangeNotifier {
 
     _set(_status.copyWith(
       phase: ConnectionPhase.locating,
-      message: 'Looking for ${pc.deviceName}…',
+      message: 'Looking for ${pc.displayName}…',
     ));
 
-    var failure = '${pc.deviceName} is not answering on this network.';
+    var failure = '${pc.displayName} is not answering on this network.';
 
     final endpoint = await _locate(
       pc,
@@ -428,12 +435,12 @@ class ConnectionController extends ChangeNotifier {
       // points at the address instead of asking for a new pairing, and the search goes on: the
       // PC may still turn up on the local network.
       throw ControlChannelException(
-        'The device at $remoteLabel is not ${pc.deviceName}: its certificate does not match. '
+        'The device at $remoteLabel is not ${pc.displayName}: its certificate does not match. '
         'Check the remote address on the Devices tab.',
       );
     } on ControlChannelException {
       throw ControlChannelException(
-        '${pc.deviceName} is not answering on this network or at $remoteLabel.',
+        '${pc.displayName} is not answering on this network or at $remoteLabel.',
       );
     }
   }
@@ -574,6 +581,10 @@ class ConnectionController extends ChangeNotifier {
               data['sessionAgentConnected'] as bool? ?? _status.sessionAgentConnected,
         ));
 
+        // Agents start and stop with signing in and out, and what the PC can do changes with
+        // them: signing in at the lock screen from this phone brings apps and files back.
+        _refreshCapabilities().ignore();
+
       case Events.permissionsChanged:
         final granted =
             (event.data?['permissions'] as List<dynamic>? ?? const []).whereType<String>().toList();
@@ -624,6 +635,23 @@ class ConnectionController extends ChangeNotifier {
       ));
     } on Object {
       // The connection's own error handling will surface a real failure.
+    }
+  }
+
+  /// Re-reads what the PC can do now. The handshake reports it once; this keeps it current.
+  Future<void> _refreshCapabilities() async {
+    final client = _client;
+    if (client == null || !client.isConnected) return;
+
+    try {
+      final response = await client.send(Commands.deviceInfo);
+      if (!response.ok) return;
+
+      final capabilities =
+          (response.map['capabilities'] as List<dynamic>? ?? const []).whereType<String>().toList();
+      if (_client == client) _set(_status.copyWith(capabilities: capabilities));
+    } on Object {
+      // Keeps the list it had; the connection's own error handling reports a real failure.
     }
   }
 

@@ -166,6 +166,29 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool CloseDesktop(nint desktop);
 
+    /// <summary>
+    /// Desktop access for a thread that is to be moved onto the input desktop: enough to read it,
+    /// draw on it, duplicate it and inject input into it.
+    /// </summary>
+    internal const uint GenericAll = 0x10000000;
+
+    /// <summary>
+    /// Moves the calling thread onto a desktop.
+    /// </summary>
+    /// <remarks>
+    /// Fails if the thread owns a window or a hook. Only the desktop agent calls it, and only from
+    /// threads that never create either (§12.1).
+    /// </remarks>
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetThreadDesktop(nint desktop);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial nint GetThreadDesktop(uint threadId);
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial uint GetCurrentThreadId();
+
     [LibraryImport("user32.dll", EntryPoint = "GetUserObjectInformationW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static unsafe partial bool GetUserObjectInformation(

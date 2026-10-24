@@ -75,14 +75,16 @@ public sealed class ServiceCapabilityProvider : ICapabilityProvider
             capabilities.Add(CapabilityNames.WakeOnLan);
         }
 
-        // --- Session-side: whatever the agent probed in the user's desktop. ---
+        // --- Session-side: whatever the agents probed in the console session. Installed, that is
+        //     two agents — the user's for apps and files, the desktop agent for screen and input —
+        //     and with nobody signed in, the desktop agent alone. ---
 
-        ConnectedAgent? agent = _agents.ActiveAgent;
-        if (agent is not null)
+        IReadOnlyList<ConnectedAgent> agents = _agents.ActiveAgents;
+        if (agents.Count > 0)
         {
             capabilities.Add(CapabilityNames.SessionAgent);
 
-            foreach (string capability in agent.Capabilities)
+            foreach (string capability in agents.SelectMany(static a => a.Capabilities))
             {
                 capabilities.Add(capability);
             }

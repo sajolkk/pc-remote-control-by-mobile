@@ -4,6 +4,7 @@ using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using RemoteAgent.Core.Abstractions;
 using RemoteAgent.Windows.Interop;
+using RemoteAgent.Windows.Session;
 
 namespace RemoteAgent.Windows.Input;
 
@@ -17,7 +18,9 @@ namespace RemoteAgent.Windows.Input;
 /// here is the translation of an already-resolved event into Windows' <c>INPUT</c> structure —
 /// the part that can only be verified on a real desktop, kept as small as it can be.</para>
 ///
-/// <para><b>What this cannot do, by Windows' design (§12.1):</b></para>
+/// <para><b>What this cannot do in an ordinary user process, by Windows' design (§12.1).</b> The
+/// first two limits are lifted in the desktop agent, which runs as SYSTEM and follows the input
+/// desktop (see <see cref="InputDesktopSwitcher"/>); they still apply to portable mode.</para>
 /// <list type="bullet">
 /// <item><b>Elevated windows ignore it.</b> User Interface Privilege Isolation drops input sent
 /// from this medium-integrity process to a window running as administrator. <c>SendInput</c>
@@ -40,12 +43,22 @@ public sealed class SendInputInjector : IInputInjector
     private const int StackBatch = 32;
 
     private readonly ILogger<SendInputInjector> _logger;
+    private readonly InputDesktopSwitcher? _desktops;
 
     /// <summary>Creates the injector.</summary>
-    public SendInputInjector(ILogger<SendInputInjector> logger)
+    /// <param name="logger">Diagnostic sink.</param>
+    /// <param name="desktops">
+    /// In the desktop agent, which runs as SYSTEM, moves the injecting thread onto whichever
+    /// desktop holds input — so the lock screen, the sign-in screen and UAC prompts can be used
+    /// from the phone. Absent or disabled, the limits listed above apply.
+    /// </param>
+    public SendInputInjector(ILogger<SendInputInjector> logger, InputDesktopSwitcher? desktops = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _desktops = desktops;
     }
+
+    private bool FollowsInputDesktop => _desktops?.Enabled == true;
 
     /// <inheritdoc />
     public PixelRect GetVirtualScreen() => new(
@@ -55,12 +68,23 @@ public sealed class SendInputInjector : IInputInjector
         NativeMethods.GetSystemMetrics(NativeMethods.SmCyVirtualScreen));
 
     /// <inheritdoc />
-    public (int X, int Y)? GetCursorPosition() =>
-        NativeMethods.GetCursorPos(out NativeMethods.Point point) ? (point.X, point.Y) : null;
+    public (int X, int Y)? GetCursorPosition()
+    {
+        // GetCursorPos fails unless the caller is on the input desktop.
+        _desktops?.AttachCurrentThread();
+        return NativeMethods.GetCursorPos(out NativeMethods.Point point) ? (point.X, point.Y) : null;
+    }
 
     /// <inheritdoc />
     public unsafe InputDesktopState GetDesktopState()
     {
+        // Running as SYSTEM and following the input desktop, every desktop is reachable: the lock
+        // screen is something to type a password into, not a reason to refuse.
+        if (FollowsInputDesktop)
+        {
+            return InputDesktopState.Normal;
+        }
+
         nint desktop = NativeMethods.OpenInputDesktop(0, false, NativeMethods.DesktopReadObjects);
         if (desktop == nint.Zero)
         {
@@ -108,6 +132,10 @@ public sealed class SendInputInjector : IInputInjector
         {
             return true;
         }
+
+        // SendInput delivers to the calling thread's desktop and fails when that is not the one
+        // receiving input. Commands arrive on pool threads, so each send checks its own thread.
+        _desktops?.AttachCurrentThread();
 
         // "Left" on the wire means the primary button. SendInput's LEFTDOWN means the physical
         // left switch, which a left-handed setup has made the secondary one.

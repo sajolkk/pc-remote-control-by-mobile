@@ -35,6 +35,7 @@ public sealed class ServiceChannelClient : IAsyncDisposable
     private readonly int _sessionId;
     private readonly string _userName;
     private readonly string _agentVersion;
+    private readonly SessionAgentKind _kind;
 
     private IpcConnection? _connection;
 
@@ -44,13 +45,16 @@ public sealed class ServiceChannelClient : IAsyncDisposable
     /// <param name="sessionId">The session this agent serves.</param>
     /// <param name="userName">The user this agent runs as.</param>
     /// <param name="agentVersion">Build version, for mismatch detection.</param>
+    /// <param name="kind">Which share of the session's work this agent does.</param>
     public ServiceChannelClient(
         ILogger<ServiceChannelClient> logger,
         string token,
         int sessionId,
         string userName,
-        string agentVersion)
+        string agentVersion,
+        SessionAgentKind kind = SessionAgentKind.Full)
     {
+        _kind = kind;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _token = token ?? throw new ArgumentNullException(nameof(token));
         _sessionId = sessionId;
@@ -66,6 +70,9 @@ public sealed class ServiceChannelClient : IAsyncDisposable
 
     /// <summary>Capabilities probed in this session, advertised at handshake.</summary>
     public IReadOnlyList<string> Capabilities { get; set; } = [];
+
+    /// <summary>Which share of the session's work this agent does.</summary>
+    public SessionAgentKind Kind => _kind;
 
     /// <summary>Whether the channel is currently up.</summary>
     public bool IsConnected => _connection?.IsConnected == true;
@@ -86,6 +93,10 @@ public sealed class ServiceChannelClient : IAsyncDisposable
 
         return (token, sessionId);
     }
+
+    /// <summary>Reads the agent kind the service placed in the environment.</summary>
+    public static SessionAgentKind ReadAgentKind() =>
+        SessionAgentKinds.Parse(Environment.GetEnvironmentVariable(IpcPipe.AgentKindVariable));
 
     /// <summary>
     /// Connects and handshakes, retrying until the token is rejected or cancellation.
@@ -163,6 +174,7 @@ public sealed class ServiceChannelClient : IAsyncDisposable
                 AgentVersion = _agentVersion,
                 Commands = ImplementedCommands.ToArray(),
                 Capabilities = Capabilities.ToArray(),
+                Kind = SessionAgentKinds.ToName(_kind),
             };
 
             IpcResponse response = await connection.SendRequestAsync(

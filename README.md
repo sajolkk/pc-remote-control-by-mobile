@@ -34,14 +34,12 @@ From your phone, on the same Wi-Fi:
 
 ## What it deliberately will not do
 
-**It cannot unlock your PC, and it never will.** Windows puts the lock screen on a separate protected
-desktop that no ordinary application can draw on or send input to — that boundary is what stops any
-program on your PC from capturing your password. The only sanctioned way in is a Windows Credential
-Provider, which is a separate and much higher-risk project.
-
-So: this app will never store your Windows password and never type it for you. Locking works;
-unlocking needs you at the keyboard. The reasoning is in
-[§12.1 of the architecture](shared/docs/01-architecture.md).
+**It never stores your Windows password and never types it for you.** Installed with the setup
+program, the PC shows its lock screen and sign-in screen on the phone like any other screen, and you
+unlock it by typing your PIN or password yourself, the way you would at the keyboard. Windows lets
+only SYSTEM see that screen, so the installed service runs screen and input in a separate SYSTEM
+process; apps and files stay at your own rights. The portable version cannot do this. The reasoning
+is in [§12.1 of the architecture](shared/docs/01-architecture.md).
 
 ## How the security works
 

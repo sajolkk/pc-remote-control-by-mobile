@@ -76,6 +76,9 @@ class ConnectionManager extends ChangeNotifier {
 
   /// Disconnects from one PC. The others stay connected; if it was the selected one, another
   /// connected PC takes its place.
+  /// Shows an updated record for a PC, e.g. a new name, on its connection if it has one.
+  void updatePc(PairedPc pc) => _byId[pc.deviceId]?.updatePc(pc);
+
   Future<void> disconnect(String deviceId) async {
     _store?.setAutoConnect(deviceId, false).ignore();
 

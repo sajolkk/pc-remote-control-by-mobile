@@ -174,6 +174,10 @@ class Capabilities {
 
   static const screenCapture = 'screen.capture';
   static const multiMonitor = 'screen.multi_monitor';
+
+  /// The lock screen, the sign-in screen and UAC prompts can be seen and used remotely: the PC
+  /// runs screen and input with SYSTEM rights. Without it, those screens are out of reach.
+  static const secureDesktop = 'screen.secure_desktop';
   static const hardwareEncode = 'encode.h264.hardware';
   static const softwareEncode = 'encode.h264.software';
   static const input = 'input';

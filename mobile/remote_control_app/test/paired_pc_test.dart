@@ -228,6 +228,45 @@ void main() {
       expect(stored.remotePort, 5000);
       expect(await store.getAll(), hasLength(1));
     });
+
+    test("a nickname is shown instead of the PC's name, and survives reconnects and re-pairing",
+        () async {
+      final store = PairedPcStore();
+      await store.save(_pc());
+
+      final renamed = await store.setNickname('pc-1', '  My home PC  ');
+      expect(renamed!.nickname, 'My home PC');
+      expect(renamed.displayName, 'My home PC');
+      expect(renamed.deviceName, 'Office PC');
+
+      // A connection refreshes the PC's own name from its hello, through copyWith.
+      await store.save(renamed.copyWith(deviceName: 'DESKTOP-2DF', lastSeenAt: DateTime(2026, 3)));
+      var stored = await store.find('pc-1');
+      expect(stored!.deviceName, 'DESKTOP-2DF');
+      expect(stored.displayName, 'My home PC');
+
+      // Pairing again builds a fresh record that knows nothing about the nickname.
+      await store.save(_pc(fingerprint: 'fp-new'));
+      stored = await store.find('pc-1');
+      expect(stored!.fingerprint, 'fp-new');
+      expect(stored.displayName, 'My home PC');
+    });
+
+    test("clearing the nickname goes back to the PC's own name", () async {
+      final store = PairedPcStore();
+      await store.save(_pc());
+      await store.setNickname('pc-1', 'My home PC');
+
+      for (final cleared in [null, '', '   ']) {
+        await store.setNickname('pc-1', 'My home PC');
+        final updated = await store.setNickname('pc-1', cleared);
+        expect(updated!.nickname, isNull);
+        expect(updated.displayName, 'Office PC');
+        expect(updated.toJson().containsKey('nickname'), isFalse);
+      }
+
+      expect(await store.setNickname('nope', 'x'), isNull);
+    });
   });
 }
 
