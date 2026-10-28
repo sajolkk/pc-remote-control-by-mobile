@@ -82,6 +82,12 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    /// <summary>
+    /// Creates each server end of the pipe. Tests replace it with a private pipe name, because the
+    /// real one belongs to the installed service.
+    /// </summary>
+    internal Func<bool, NamedPipeServerStream> CreateServerStream { get; init; } = IpcPipe.CreateServerStream;
+
     /// <summary>Raised when an agent completes its handshake.</summary>
     public event EventHandler<ConnectedAgent>? AgentConnected;
 
@@ -293,7 +299,7 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             try
             {
                 bool first = !_firstInstanceCreated;
-                server = IpcPipe.CreateServerStream(first);
+                server = CreateServerStream(first);
                 _firstInstanceCreated = true;
 
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);

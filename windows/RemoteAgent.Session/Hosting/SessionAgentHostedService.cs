@@ -51,6 +51,7 @@ namespace RemoteAgent.Session.Hosting;
 [SupportedOSPlatform("windows")]
 public sealed class SessionAgentHostedService : BackgroundService
 {
+    private static readonly TimeSpan FirstScreenReprobeDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ScreenReprobeWindow = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan MaxScreenReprobeInterval = TimeSpan.FromSeconds(30);
 
@@ -66,8 +67,7 @@ public sealed class SessionAgentHostedService : BackgroundService
     private readonly ILogger<TrayIcon> _trayLogger;
     private readonly MediaSessionManager _media;
     private readonly IMonitorProvider _monitors;
-    private readonly IScreenCaptureFactory _captureFactory;
-    private readonly IVideoEncoderFactory _encoders;
+    private readonly ScreenCapabilityProbe _screenProbe;
     private readonly InputController _input;
     private readonly IInputInjector _injector;
     private readonly IWindowManager _windows;
@@ -95,8 +95,7 @@ public sealed class SessionAgentHostedService : BackgroundService
         ILogger<TrayIcon> trayLogger,
         MediaSessionManager media,
         IMonitorProvider monitors,
-        IScreenCaptureFactory captureFactory,
-        IVideoEncoderFactory encoders,
+        ScreenCapabilityProbe screenProbe,
         InputController input,
         IInputInjector injector,
         IWindowManager windows,
@@ -108,8 +107,7 @@ public sealed class SessionAgentHostedService : BackgroundService
         _filePolicy = filePolicy ?? throw new ArgumentNullException(nameof(filePolicy));
         _media = media ?? throw new ArgumentNullException(nameof(media));
         _monitors = monitors ?? throw new ArgumentNullException(nameof(monitors));
-        _captureFactory = captureFactory ?? throw new ArgumentNullException(nameof(captureFactory));
-        _encoders = encoders ?? throw new ArgumentNullException(nameof(encoders));
+        _screenProbe = screenProbe ?? throw new ArgumentNullException(nameof(screenProbe));
         _channel = channel ?? throw new ArgumentNullException(nameof(channel));
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
@@ -691,7 +689,7 @@ public sealed class SessionAgentHostedService : BackgroundService
 
         if (DoesScreenAndInput)
         {
-            List<string> screen = ProbeScreenCapabilities().ToList();
+            IReadOnlyList<string> screen = _screenProbe.Probe();
             capabilities.AddRange(screen);
             capabilities.AddRange(ProbeInputCapabilities());
 
@@ -753,49 +751,34 @@ public sealed class SessionAgentHostedService : BackgroundService
     /// Probes screen streaming again until it works, then tells the service.
     /// </summary>
     /// <remarks>
-    /// The service starts the desktop agent as the PC boots, on the sign-in screen, and the display
-    /// driver or the H.264 encoder is often not ready yet. The first probe then finds no monitor or
-    /// no encoder, and nothing ever probed again: the phone said the PC could not stream until the
-    /// agent happened to be restarted. Gives up after <see cref="ScreenReprobeWindow"/>, because a
-    /// PC that still cannot stream by then genuinely cannot, and the warning each probe logs would
-    /// otherwise repeat forever.
+    /// The first probe runs as the PC boots, often before the display driver or the H.264 encoder
+    /// is ready (see <see cref="ScreenCapabilityProbe"/>). The service, told of the change, tells
+    /// every connected phone to re-read what the PC can do.
     /// </remarks>
     private async Task WatchForScreenCaptureAsync(CancellationToken stoppingToken)
     {
-        TimeSpan delay = TimeSpan.FromSeconds(5);
-        DateTimeOffset giveUpAt = _clock.UtcNow.Add(ScreenReprobeWindow);
-
         try
         {
-            while (_clock.UtcNow < giveUpAt)
+            IReadOnlyList<string>? screen = await _screenProbe
+                .WaitUntilAvailableAsync(FirstScreenReprobeDelay, MaxScreenReprobeInterval, ScreenReprobeWindow, stoppingToken)
+                .ConfigureAwait(false);
+
+            if (screen is null)
             {
-                await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
-                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, MaxScreenReprobeInterval.Ticks));
-
-                List<string> screen = ProbeScreenCapabilities().ToList();
-                if (!screen.Contains(CapabilityNames.ScreenCapture))
-                {
-                    continue;
-                }
-
-                if (Kind == SessionAgentKind.Desktop)
-                {
-                    screen.Add(CapabilityNames.SecureDesktop);
-                }
-
-                IReadOnlyList<string> capabilities = _channel.Capabilities.Union(screen, StringComparer.Ordinal).ToArray();
-
-                _logger.LogInformation(
-                    "Screen streaming works now; reporting Capabilities={Capabilities}",
-                    string.Join(",", capabilities));
-
-                await _channel.UpdateCapabilitiesAsync(capabilities, stoppingToken).ConfigureAwait(false);
                 return;
             }
 
-            _logger.LogWarning(
-                "Screen streaming still does not work after {Minutes} minutes; no longer probing for it.",
-                ScreenReprobeWindow.TotalMinutes);
+            IEnumerable<string> added = Kind == SessionAgentKind.Desktop
+                ? screen.Append(CapabilityNames.SecureDesktop)
+                : screen;
+
+            IReadOnlyList<string> capabilities = _channel.Capabilities.Union(added, StringComparer.Ordinal).ToArray();
+
+            _logger.LogInformation(
+                "Screen streaming works now; reporting Capabilities={Capabilities}",
+                string.Join(",", capabilities));
+
+            await _channel.UpdateCapabilitiesAsync(capabilities, stoppingToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -867,76 +850,6 @@ public sealed class SessionAgentHostedService : BackgroundService
         }
 
         capabilities.Add(CapabilityNames.Files);
-        return capabilities;
-    }
-
-    /// <summary>
-    /// Reports screen streaming only if every link in the chain works on this PC: a monitor to
-    /// capture, Desktop Duplication on it, and an H.264 encoder that actually starts.
-    /// </summary>
-    /// <remarks>
-    /// A capture that fails <em>transiently</em> — because the agent started while the PC was
-    /// locked — still counts. The capability describes the PC, not this moment; the locked state
-    /// reaches the phone separately and it explains the blank view (§6.4).
-    /// </remarks>
-    private IEnumerable<string> ProbeScreenCapabilities()
-    {
-        var capabilities = new List<string>();
-
-        try
-        {
-            IReadOnlyList<MonitorInfo> monitors = _monitors.GetMonitors();
-            if (monitors.Count == 0)
-            {
-                _logger.LogWarning("No capturable monitor was found; screen streaming is not advertised.");
-                return capabilities;
-            }
-
-            MonitorInfo primary = monitors.FirstOrDefault(static m => m.Primary) ?? monitors[0];
-            try
-            {
-                using IScreenCapture capture = _captureFactory.Open(primary.Id);
-            }
-            catch (ScreenCaptureUnavailableException ex) when (ex.Transient)
-            {
-                _logger.LogInformation("Capture is unavailable right now ({Reason}); it will be retried per stream.", ex.Message);
-            }
-
-            IReadOnlyList<VideoEncoderDescriptor> encoders = _encoders.Probe();
-            if (encoders.Count == 0)
-            {
-                _logger.LogWarning(
-                    "No H.264 encoder is usable on this PC (a Windows N edition without the Media Feature " +
-                    "Pack has none); screen streaming is not advertised.");
-                return capabilities;
-            }
-
-            capabilities.Add(CapabilityNames.ScreenCapture);
-
-            if (encoders.Any(static e => e.IsHardware))
-            {
-                capabilities.Add(CapabilityNames.HardwareEncodeH264);
-            }
-
-            if (encoders.Any(static e => !e.IsHardware))
-            {
-                capabilities.Add(CapabilityNames.SoftwareEncodeH264);
-            }
-
-            if (monitors.Count > 1)
-            {
-                capabilities.Add(CapabilityNames.MultiMonitor);
-            }
-        }
-        catch (ScreenCaptureUnavailableException ex)
-        {
-            _logger.LogWarning("Desktop Duplication does not work on this PC ({Reason}); screen streaming is not advertised.", ex.Message);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Screen capture could not be probed; screen streaming is not advertised.");
-        }
-
         return capabilities;
     }
 

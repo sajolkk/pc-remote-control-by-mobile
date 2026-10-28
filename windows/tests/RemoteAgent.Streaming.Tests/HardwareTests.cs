@@ -40,6 +40,31 @@ public sealed class HardwareTests
         });
     }
 
+    /// <summary>The probe the session agent advertises from, on the real platform layer.</summary>
+    [Fact]
+    public void ScreenCapabilityProbe_OnAWorkingDesktop_ReportsScreenCapture()
+    {
+        var monitors = new DxgiMonitorProvider(NullLogger<DxgiMonitorProvider>.Instance);
+        var encoders = new MediaFoundationH264EncoderFactory(NullLogger<MediaFoundationH264Encoder>.Instance);
+        if (monitors.GetMonitors().Count == 0 || encoders.Probe().Count == 0)
+        {
+            return;
+        }
+
+        var probe = new ScreenCapabilityProbe(
+            monitors,
+            new DesktopDuplicationCaptureFactory(NullLogger<DesktopDuplicationCapture>.Instance),
+            encoders,
+            NullLogger<ScreenCapabilityProbe>.Instance);
+
+        IReadOnlyList<string> capabilities = probe.Probe();
+
+        Assert.Contains(CapabilityNames.ScreenCapture, capabilities);
+        Assert.True(
+            capabilities.Contains(CapabilityNames.HardwareEncodeH264) || capabilities.Contains(CapabilityNames.SoftwareEncodeH264),
+            "an encoder kind is reported alongside screen capture");
+    }
+
     [Fact]
     public void Capture_PrimaryMonitor_ProducesAFullFrame()
     {

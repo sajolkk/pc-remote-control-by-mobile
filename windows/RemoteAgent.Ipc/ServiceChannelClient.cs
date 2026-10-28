@@ -38,6 +38,7 @@ public sealed class ServiceChannelClient : IAsyncDisposable
     private readonly SessionAgentKind _kind;
 
     private IpcConnection? _connection;
+    private IReadOnlyList<string> _capabilities = [];
 
     /// <summary>Creates the client from the environment the service provided.</summary>
     /// <param name="logger">Diagnostic sink.</param>
@@ -62,6 +63,12 @@ public sealed class ServiceChannelClient : IAsyncDisposable
         _agentVersion = agentVersion;
     }
 
+    /// <summary>
+    /// Creates the client end of the pipe. Tests replace it with a private pipe name, because the
+    /// real one belongs to the installed service.
+    /// </summary>
+    internal Func<NamedPipeClientStream> CreateClientStream { get; init; } = IpcPipe.CreateClientStream;
+
     /// <summary>Handles commands the service forwards. Set before connecting.</summary>
     public Func<IpcRequest, CancellationToken, Task<IpcResponse>>? RequestHandler { get; set; }
 
@@ -69,7 +76,11 @@ public sealed class ServiceChannelClient : IAsyncDisposable
     public IReadOnlyList<string> ImplementedCommands { get; set; } = [];
 
     /// <summary>Capabilities probed in this session, advertised at handshake.</summary>
-    public IReadOnlyList<string> Capabilities { get; set; } = [];
+    public IReadOnlyList<string> Capabilities
+    {
+        get => Volatile.Read(ref _capabilities);
+        set => Volatile.Write(ref _capabilities, value ?? throw new ArgumentNullException(nameof(value)));
+    }
 
     /// <summary>Which share of the session's work this agent does.</summary>
     public SessionAgentKind Kind => _kind;
@@ -156,7 +167,7 @@ public sealed class ServiceChannelClient : IAsyncDisposable
         NamedPipeClientStream? stream = null;
         try
         {
-            stream = IpcPipe.CreateClientStream();
+            stream = CreateClientStream();
             await stream.ConnectAsync(3000, cancellationToken).ConfigureAwait(false);
 
             var connection = new IpcConnection(stream, _logger, "agent")
@@ -166,6 +177,8 @@ public sealed class ServiceChannelClient : IAsyncDisposable
 
             connection.Start();
 
+            IReadOnlyList<string> advertised = Capabilities;
+
             var hello = new IpcHelloArgs
             {
                 Token = _token,
@@ -173,7 +186,7 @@ public sealed class ServiceChannelClient : IAsyncDisposable
                 UserName = _userName,
                 AgentVersion = _agentVersion,
                 Commands = ImplementedCommands.ToArray(),
-                Capabilities = Capabilities.ToArray(),
+                Capabilities = advertised.ToArray(),
                 Kind = SessionAgentKinds.ToName(_kind),
             };
 
@@ -207,6 +220,14 @@ public sealed class ServiceChannelClient : IAsyncDisposable
                 "Connected to the PC-Remote service (session {SessionId}, user {User}).",
                 _sessionId,
                 _userName);
+
+            // An update made while the hello was in flight found no connection to send on, and the
+            // hello carried the list from before it. Sent now, or the service keeps the old one.
+            IReadOnlyList<string> current = Capabilities;
+            if (!ReferenceEquals(current, advertised))
+            {
+                await SendCapabilitiesAsync(current, cancellationToken).ConfigureAwait(false);
+            }
 
             return HandshakeOutcome.Connected;
         }
@@ -277,14 +298,17 @@ public sealed class ServiceChannelClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(capabilities);
 
-        // Stored first, so a reconnect that happens instead of this event still carries them.
+        // Stored first: a handshake that happens instead of, or during, this event carries them.
         Capabilities = capabilities;
 
-        return SendEventAsync(
+        return SendCapabilitiesAsync(capabilities, cancellationToken);
+    }
+
+    private Task SendCapabilitiesAsync(IReadOnlyList<string> capabilities, CancellationToken cancellationToken) =>
+        SendEventAsync(
             IpcCommands.CapabilitiesChanged,
             new JsonObject { ["capabilities"] = new JsonArray([.. capabilities.Select(c => JsonValue.Create(c))]) },
             cancellationToken);
-    }
 
     /// <summary>Pushes a state-change event to the service for relay to clients.</summary>
     public Task SendEventAsync(string topic, JsonNode? data, CancellationToken cancellationToken) =>

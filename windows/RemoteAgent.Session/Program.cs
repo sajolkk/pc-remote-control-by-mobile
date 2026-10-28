@@ -143,6 +143,7 @@ public static class Program
         builder.Services.AddSingleton<IMonitorProvider, DxgiMonitorProvider>();
         builder.Services.AddSingleton<IScreenCaptureFactory, DesktopDuplicationCaptureFactory>();
         builder.Services.AddSingleton<IVideoEncoderFactory, MediaFoundationH264EncoderFactory>();
+        builder.Services.AddSingleton<ScreenCapabilityProbe>();
         builder.Services.AddSingleton<IImageEncoder, JpegImageEncoder>();
 
         builder.Services.AddSingleton(provider =>
