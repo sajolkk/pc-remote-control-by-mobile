@@ -79,7 +79,14 @@ public sealed class MediaFoundationH264EncoderFactory : IVideoEncoderFactory
                 }
             }
 
-            _probed = usable;
+            // An empty result is not remembered. Early in boot the GPU driver, and with it the
+            // hardware encoder, may not be loaded yet, and caching "none" then would keep this
+            // process from ever streaming.
+            if (usable.Count > 0)
+            {
+                _probed = usable;
+            }
+
             return usable;
         }
     }

@@ -272,6 +272,20 @@ public sealed class ServiceChannelClient : IAsyncDisposable
     /// </summary>
     public event EventHandler? Disconnected;
 
+    /// <summary>Replaces the advertised capabilities and tells the service, which tells clients.</summary>
+    public Task UpdateCapabilitiesAsync(IReadOnlyList<string> capabilities, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(capabilities);
+
+        // Stored first, so a reconnect that happens instead of this event still carries them.
+        Capabilities = capabilities;
+
+        return SendEventAsync(
+            IpcCommands.CapabilitiesChanged,
+            new JsonObject { ["capabilities"] = new JsonArray([.. capabilities.Select(c => JsonValue.Create(c))]) },
+            cancellationToken);
+    }
+
     /// <summary>Pushes a state-change event to the service for relay to clients.</summary>
     public Task SendEventAsync(string topic, JsonNode? data, CancellationToken cancellationToken) =>
         SendEventAsync(topic, data, connectionId: null, cancellationToken);

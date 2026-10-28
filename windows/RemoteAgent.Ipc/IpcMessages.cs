@@ -90,6 +90,17 @@ public static class IpcCommands
     /// whose <c>ViewScreen</c> was revoked at the PC, would keep receiving video.
     /// </remarks>
     public const string ConnectionChanged = "ipc.connection_changed";
+
+    /// <summary>
+    /// Agent tells the service its capabilities changed since the handshake (an event, carrying
+    /// <c>capabilities</c>).
+    /// </summary>
+    /// <remarks>
+    /// The desktop agent starts with the PC, often before the display driver or the H.264 encoder
+    /// is ready, so its first probe can miss screen streaming. Without this the miss lasted until
+    /// the agent was restarted, and the phone said the PC could not stream at all.
+    /// </remarks>
+    public const string CapabilitiesChanged = "ipc.capabilities_changed";
 }
 
 /// <summary>

@@ -70,6 +70,7 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
   bool _permissionNoticeDismissed = false;
   bool _panMode = false;
   DateTime? _lastBackAt;
+  bool _capabilitiesRechecked = false;
 
   @override
   void initState() {
@@ -134,7 +135,19 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
   Future<void> _startIfPossible() async {
     if (!mounted || !_wantStream || _media.value.isActive) return;
 
-    if (!_canStream(_connection.status)) return;
+    final status = _connection.status;
+    if (!_canStream(status)) {
+      // "Cannot stream" from a PC whose screen agent is running may just be an old list: the PC
+      // can find screen capture a while after it boots. Asking once costs one round trip.
+      if (status.isConnected &&
+          status.sessionAgentConnected &&
+          !status.has(Capabilities.screenCapture) &&
+          !_capabilitiesRechecked) {
+        _capabilitiesRechecked = true;
+        _connection.refreshState().ignore();
+      }
+      return;
+    }
 
     await _loadMonitors();
     await _media.start(monitorId: _media.value.monitorId, quality: _preset);

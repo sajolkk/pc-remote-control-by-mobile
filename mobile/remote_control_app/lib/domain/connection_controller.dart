@@ -633,6 +633,13 @@ class ConnectionController extends ChangeNotifier {
         sessionAgentConnected: data['sessionAgentConnected'] as bool? ?? false,
         latencyMs: stopwatch.elapsedMilliseconds,
       ));
+
+      // The handshake's list can already be out of date. Right after the PC boots, the phone
+      // connects before the PC's screen agent has registered; the event saying it did can arrive
+      // before this connection listens for events, and a refresh it triggers can be overwritten
+      // by the handshake's list. Reading it again here is what makes the screen work without a
+      // manual reconnect.
+      await _refreshCapabilities();
     } on Object {
       // The connection's own error handling will surface a real failure.
     }

@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using RemoteAgent.Core.Commands;
 using RemoteAgent.Protocol;
@@ -83,6 +84,9 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
 
     /// <summary>Raised when an agent completes its handshake.</summary>
     public event EventHandler<ConnectedAgent>? AgentConnected;
+
+    /// <summary>Raised when a connected agent reports a different set of capabilities.</summary>
+    public event EventHandler<ConnectedAgent>? AgentCapabilitiesChanged;
 
     /// <summary>Raised when an agent disconnects.</summary>
     public event EventHandler<int>? AgentDisconnected;
@@ -391,6 +395,12 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
 
         connection.EventHandler = (ipcEvent, _) =>
         {
+            if (string.Equals(ipcEvent.Topic, IpcCommands.CapabilitiesChanged, StringComparison.Ordinal))
+            {
+                UpdateCapabilities(connection, ipcEvent);
+                return Task.CompletedTask;
+            }
+
             AgentEvent?.Invoke(this, ipcEvent);
             return Task.CompletedTask;
         };
@@ -442,8 +452,9 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
 
         connection.Closed += (_, _) =>
         {
+            // Compared by connection, not by record: a capabilities update replaces the record.
             if (_agents.TryGetValue(key, out ConnectedAgent? current) &&
-                ReferenceEquals(current, agent))
+                ReferenceEquals(current.Connection, connection))
             {
                 _agents.TryRemove(key, out _);
                 _logger.LogInformation(
@@ -465,6 +476,50 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             string.Join(",", agent.Capabilities));
 
         AgentConnected?.Invoke(this, agent);
+    }
+
+    /// <summary>
+    /// Replaces the capabilities of the agent on <paramref name="connection"/> with the ones it
+    /// re-probed.
+    /// </summary>
+    /// <remarks>
+    /// Only the agent on that connection is touched, so an agent can change nothing but its own
+    /// entry. An update that arrives before the handshake has registered the agent is ignored.
+    /// </remarks>
+    private void UpdateCapabilities(IpcConnection connection, IpcEvent ipcEvent)
+    {
+        if (ipcEvent.Data?["capabilities"] is not JsonArray array)
+        {
+            return;
+        }
+
+        string[] capabilities = array
+            .Select(static node => node?.GetValueKind() == JsonValueKind.String ? node.GetValue<string>() : null)
+            .OfType<string>()
+            .ToArray();
+
+        foreach (KeyValuePair<(int SessionId, SessionAgentKind Kind), ConnectedAgent> entry in _agents)
+        {
+            if (!ReferenceEquals(entry.Value.Connection, connection))
+            {
+                continue;
+            }
+
+            ConnectedAgent updated = entry.Value with { Capabilities = capabilities };
+            if (!_agents.TryUpdate(entry.Key, updated, entry.Value))
+            {
+                return;
+            }
+
+            _logger.LogInformation(
+                "The {Kind} agent for session {SessionId} now reports Capabilities={Capabilities}",
+                updated.Kind,
+                updated.SessionId,
+                string.Join(",", capabilities));
+
+            AgentCapabilitiesChanged?.Invoke(this, updated);
+            return;
+        }
     }
 
     /// <summary>

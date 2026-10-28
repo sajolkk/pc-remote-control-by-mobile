@@ -155,6 +155,7 @@ public sealed class AgentHostedService : BackgroundService
         // 3. IPC, before the supervisor, so a fast-starting agent has somewhere to connect.
         _agents.AgentEvent += OnAgentEvent;
         _agents.AgentConnected += OnAgentConnected;
+        _agents.AgentCapabilitiesChanged += OnAgentConnected;
         _agents.AgentDisconnected += OnAgentDisconnectedRelay;
         _sessions.ConnectionEnded += OnConnectionEnded;
         _sessions.PermissionsChanged += OnConnectionPermissionsChanged;
@@ -239,6 +240,9 @@ public sealed class AgentHostedService : BackgroundService
             _clock.UnixTimeMilliseconds));
     }
 
+    // Also raised when a connected agent's capabilities change: phones re-read what the PC can do
+    // on every session.state_changed, so the same event brings them screen streaming once the
+    // desktop agent finds it.
     private void OnAgentConnected(object? sender, ConnectedAgent agent) =>
         _ = BroadcastAsync(EventEnvelope.Create(
             EventNames.SessionStateChanged,
@@ -363,6 +367,7 @@ public sealed class AgentHostedService : BackgroundService
         _sessionState.StateChanged -= OnSessionStateChanged;
         _agents.AgentEvent -= OnAgentEvent;
         _agents.AgentConnected -= OnAgentConnected;
+        _agents.AgentCapabilitiesChanged -= OnAgentConnected;
         _agents.AgentDisconnected -= OnAgentDisconnectedRelay;
         _sessions.ConnectionEnded -= OnConnectionEnded;
         _sessions.PermissionsChanged -= OnConnectionPermissionsChanged;

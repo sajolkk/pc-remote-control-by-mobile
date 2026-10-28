@@ -51,6 +51,9 @@ namespace RemoteAgent.Session.Hosting;
 [SupportedOSPlatform("windows")]
 public sealed class SessionAgentHostedService : BackgroundService
 {
+    private static readonly TimeSpan ScreenReprobeWindow = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan MaxScreenReprobeInterval = TimeSpan.FromSeconds(30);
+
     private readonly ServiceChannelClient _channel;
     private readonly ICommandDispatcher _dispatcher;
     private readonly CommandRegistry _registry;
@@ -127,6 +130,11 @@ public sealed class SessionAgentHostedService : BackgroundService
             _channel.RequestHandler = HandleServiceRequestAsync;
             _channel.ImplementedCommands = _registry.ImplementedCommands.ToArray();
             _channel.Capabilities = await ProbeCapabilitiesAsync(stoppingToken).ConfigureAwait(false);
+
+            if (DoesScreenAndInput && !_channel.Capabilities.Contains(CapabilityNames.ScreenCapture))
+            {
+                _ = WatchForScreenCaptureAsync(stoppingToken);
+            }
 
             // Telemetry goes to the one connection that owns the stream, never to everyone.
             _media.Telemetry += OnMediaTelemetry;
@@ -739,6 +747,64 @@ public sealed class SessionAgentHostedService : BackgroundService
         // Clipboard and volume are declared in the protocol but not implemented in this build, so
         // they are deliberately not advertised.
         return capabilities;
+    }
+
+    /// <summary>
+    /// Probes screen streaming again until it works, then tells the service.
+    /// </summary>
+    /// <remarks>
+    /// The service starts the desktop agent as the PC boots, on the sign-in screen, and the display
+    /// driver or the H.264 encoder is often not ready yet. The first probe then finds no monitor or
+    /// no encoder, and nothing ever probed again: the phone said the PC could not stream until the
+    /// agent happened to be restarted. Gives up after <see cref="ScreenReprobeWindow"/>, because a
+    /// PC that still cannot stream by then genuinely cannot, and the warning each probe logs would
+    /// otherwise repeat forever.
+    /// </remarks>
+    private async Task WatchForScreenCaptureAsync(CancellationToken stoppingToken)
+    {
+        TimeSpan delay = TimeSpan.FromSeconds(5);
+        DateTimeOffset giveUpAt = _clock.UtcNow.Add(ScreenReprobeWindow);
+
+        try
+        {
+            while (_clock.UtcNow < giveUpAt)
+            {
+                await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
+                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, MaxScreenReprobeInterval.Ticks));
+
+                List<string> screen = ProbeScreenCapabilities().ToList();
+                if (!screen.Contains(CapabilityNames.ScreenCapture))
+                {
+                    continue;
+                }
+
+                if (Kind == SessionAgentKind.Desktop)
+                {
+                    screen.Add(CapabilityNames.SecureDesktop);
+                }
+
+                IReadOnlyList<string> capabilities = _channel.Capabilities.Union(screen, StringComparer.Ordinal).ToArray();
+
+                _logger.LogInformation(
+                    "Screen streaming works now; reporting Capabilities={Capabilities}",
+                    string.Join(",", capabilities));
+
+                await _channel.UpdateCapabilitiesAsync(capabilities, stoppingToken).ConfigureAwait(false);
+                return;
+            }
+
+            _logger.LogWarning(
+                "Screen streaming still does not work after {Minutes} minutes; no longer probing for it.",
+                ScreenReprobeWindow.TotalMinutes);
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Probing for screen streaming again failed.");
+        }
     }
 
     /// <summary>
