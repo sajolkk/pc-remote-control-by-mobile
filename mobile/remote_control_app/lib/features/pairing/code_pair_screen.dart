@@ -102,6 +102,7 @@ class _CodePairScreenState extends ConsumerState<CodePairScreen> {
         lastSeenAt: DateTime.now(),
         permissions:
             (result['permissions'] as List<dynamic>? ?? const []).whereType<String>().toList(),
+        kind: DeviceKinds.fromJson(result['deviceKind'] ?? beacon.kind),
       );
 
       await ref.read(pairedStoreProvider).save(pc);

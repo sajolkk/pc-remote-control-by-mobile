@@ -8,6 +8,7 @@ import '../../data/storage/paired_pc_store.dart';
 import '../../domain/connection_controller.dart';
 import '../../domain/connection_manager.dart';
 import '../../protocol/protocol.dart';
+import '../host/share_phone_screen.dart';
 import '../pairing/code_pair_screen.dart';
 import '../pairing/pair_screen.dart';
 import '../remote_desktop/screen_picker_screen.dart';
@@ -30,6 +31,13 @@ class DevicesScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Devices'),
         actions: [
+          IconButton(
+            tooltip: 'Share this phone',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SharePhoneScreen()),
+            ),
+            icon: const Icon(Icons.mobile_screen_share_outlined),
+          ),
           IconButton(
             tooltip: 'Scan again',
             onPressed: () {
@@ -132,7 +140,7 @@ class DevicesScreen extends ConsumerWidget {
                   children: [
                     for (final beacon in unpaired)
                       ListTile(
-                        leading: const Icon(Icons.computer_outlined),
+                        leading: Icon(beacon.isPhone ? Icons.smartphone : Icons.computer_outlined),
                         title: Text(beacon.deviceName),
                         subtitle: Text(
                           beacon.isCompatible
@@ -537,7 +545,9 @@ class _PairedTile extends StatelessWidget {
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: ListTile(
         leading: Icon(
-          isConnected ? Icons.desktop_windows : Icons.desktop_windows_outlined,
+          pc.isPhone
+              ? (isConnected ? Icons.smartphone : Icons.smartphone_outlined)
+              : (isConnected ? Icons.desktop_windows : Icons.desktop_windows_outlined),
           color: isConnected
               ? Theme.of(context).colorScheme.primary
               : isOnline

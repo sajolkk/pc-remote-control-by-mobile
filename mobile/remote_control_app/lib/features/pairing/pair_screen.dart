@@ -68,7 +68,7 @@ class _PairScreenState extends ConsumerState<PairScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Pair a PC')),
+      appBar: AppBar(title: const Text('Pair a device')),
       body: switch (_stage) {
         _Stage.scanning => _buildScanner(),
         _Stage.connecting => _buildProgress('Connecting to the PC…'),
@@ -116,7 +116,8 @@ class _PairScreenState extends ConsumerState<PairScreen> {
                 child: Column(
                   children: [
                     const Text(
-                      'Scan the QR code shown by PC-Remote on your PC',
+                      'Scan the QR code shown by PC-Remote on your PC, or by "Share this phone" '
+                      'on another phone',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.white, fontSize: 16),
                     ),
@@ -321,6 +322,7 @@ class _PairScreenState extends ConsumerState<PairScreen> {
         lastSeenAt: DateTime.now(),
         permissions:
             (result['permissions'] as List<dynamic>? ?? const []).whereType<String>().toList(),
+        kind: DeviceKinds.fromJson(result['deviceKind'] ?? payload.kind),
       );
 
       await ref.read(pairedStoreProvider).save(pc);

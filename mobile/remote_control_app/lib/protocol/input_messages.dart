@@ -43,6 +43,23 @@ enum MouseButton {
   final String wire;
 }
 
+/// The `action` values of `phone.nav`, the one command a phone host takes that a PC does not:
+/// the Android navigation buttons and the two things on a phone that have no key.
+class PhoneNavActions {
+  const PhoneNavActions._();
+
+  static const back = 'back';
+  static const home = 'home';
+  static const recents = 'recents';
+  static const notifications = 'notifications';
+
+  /// Locks the phone (turns the screen off and engages the keyguard). It cannot be unlocked
+  /// remotely: the keyguard takes no injected input.
+  static const lock = 'lock';
+
+  static const all = <String>[back, home, recents, notifications, lock];
+}
+
 /// The Windows virtual-key codes this app sends. Standard `VK_*` values.
 class VirtualKeys {
   const VirtualKeys._();
@@ -68,6 +85,11 @@ class VirtualKeys {
   static const delete = 46;
   static const win = 91;
   static const f1 = 112;
+
+  /// The media keys. On a phone host they drive the volume through `AudioManager`.
+  static const volumeMute = 173;
+  static const volumeDown = 174;
+  static const volumeUp = 175;
 
   /// F1..F12 are contiguous: 112..123.
   static int function(int number) => f1 + number - 1;
@@ -159,6 +181,9 @@ class InputArgs {
 
   /// `input.shortcut`: pressed in order, released in reverse.
   static Map<String, dynamic> shortcut(List<int> keys) => {'keys': List<int>.of(keys)};
+
+  /// `phone.nav`: one of [PhoneNavActions].
+  static Map<String, dynamic> phoneNav(String action) => {'action': action};
 
   /// Splits [text] into pieces no longer than [maxUnits], never between the two halves of a
   /// surrogate pair: half an emoji is not a character the PC can type.

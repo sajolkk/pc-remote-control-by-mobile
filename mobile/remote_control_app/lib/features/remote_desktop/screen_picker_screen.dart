@@ -109,7 +109,9 @@ class _PcTile extends StatelessWidget {
       child: ListTile(
         contentPadding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
         leading: Icon(
-          connected ? Icons.desktop_windows : Icons.desktop_windows_outlined,
+          pc.isPhone
+              ? (connected ? Icons.smartphone : Icons.smartphone_outlined)
+              : (connected ? Icons.desktop_windows : Icons.desktop_windows_outlined),
           color: connected ? scheme.primary : scheme.outline,
           size: 32,
         ),

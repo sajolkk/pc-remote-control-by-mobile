@@ -287,6 +287,7 @@ class ConnectionController extends ChangeNotifier {
         deviceName: hello.deviceName,
         lastSeenAt: DateTime.now(),
         permissions: hello.permissions,
+        kind: hello.deviceKind,
       );
 
       // The remembered address is where the PC is on the local network. Getting through on the

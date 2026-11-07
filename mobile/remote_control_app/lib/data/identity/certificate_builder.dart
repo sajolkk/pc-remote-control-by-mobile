@@ -20,6 +20,7 @@ class CertificateBuilder {
   static const _oidKeyUsage = [2, 5, 29, 15];
   static const _oidExtKeyUsage = [2, 5, 29, 37];
   static const _oidClientAuth = [1, 3, 6, 1, 5, 5, 7, 3, 2];
+  static const _oidServerAuth = [1, 3, 6, 1, 5, 5, 7, 3, 1];
 
   /// Returns the certificate as PEM.
   static String selfSigned({
@@ -28,6 +29,7 @@ class CertificateBuilder {
     required String commonName,
     required Duration validity,
     DateTime? now,
+    bool serverAuth = false,
   }) {
     final notBefore = (now ?? DateTime.now()).toUtc().subtract(const Duration(days: 1));
     final notAfter = notBefore.add(validity);
@@ -57,9 +59,11 @@ class CertificateBuilder {
           _tlv(0x01, [0xFF]),
           _tlv(0x04, _tlv(0x03, [0x07, 0x80])),
         ]),
+        // Client authentication always; server authentication too for the certificate a phone
+        // presents when it is the one being controlled (host mode).
         _seq([
           _oid(_oidExtKeyUsage),
-          _tlv(0x04, _seq([_oid(_oidClientAuth)])),
+          _tlv(0x04, _seq([if (serverAuth) _oid(_oidServerAuth), _oid(_oidClientAuth)])),
         ]),
       ])),
     ]);

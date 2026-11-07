@@ -220,6 +220,39 @@ void main() {
     });
   });
 
+  group('phone touch', () {
+    _rigTest('a moving finger drags from where it landed, with no hold', PointerStyle.touch, (tester, rig) async {
+      rig.gestures.down(1, const Offset(20, 20), rig.at(0));
+      rig.gestures.move(1, const Offset(40, 20), rig.at(16));
+      rig.gestures.move(1, const Offset(60, 20), rig.at(32));
+      rig.gestures.up(1, rig.at(48));
+      await tester.pump(frame);
+
+      expect(rig.log, [
+        'input.mouse_button {button: left, down: true, x: 0.2, y: 0.2, monitorId: mon-a}',
+        'input.mouse_move {x: 0.4, y: 0.2, monitorId: mon-a}',
+        'input.mouse_move {x: 0.6, y: 0.2, monitorId: mon-a}',
+        'input.mouse_button {button: left, down: false}',
+      ]);
+      rig.gestures.reset();
+    });
+
+    _rigTest('a tap is still a tap, and a hold a long press', PointerStyle.touch, (tester, rig) async {
+      rig.gestures.down(1, const Offset(25, 75), rig.at(0));
+      rig.gestures.up(1, rig.at(80));
+
+      rig.gestures.down(2, const Offset(50, 50), rig.at(1000));
+      await tester.pump(ControlGestures.longPressTimeout + frame);
+      rig.gestures.up(2, rig.at(1600));
+
+      expect(rig.log, [
+        'input.mouse_click {button: left, count: 1, x: 0.25, y: 0.75, monitorId: mon-a}',
+        'input.mouse_click {button: right, count: 1, x: 0.5, y: 0.5, monitorId: mon-a}',
+      ]);
+      rig.gestures.reset();
+    });
+  });
+
   group('two and three fingers', () {
     _rigTest('dragging two fingers together scrolls what is under them', PointerStyle.direct, (tester, rig) async {
 

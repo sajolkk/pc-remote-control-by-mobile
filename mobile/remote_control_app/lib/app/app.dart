@@ -247,6 +247,9 @@ class _ConnectionBanner extends StatelessWidget {
     final canUnlock = status.has(Capabilities.secureDesktop);
 
     if (status.isLocked) {
+      if (status.pc?.isPhone == true) {
+        return '$name — locked. Unlock the phone to control it.';
+      }
       return canUnlock
           ? '$name — locked. Open Screen to unlock it.'
           : '$name — locked. Unlock at the PC to view or control the screen.';

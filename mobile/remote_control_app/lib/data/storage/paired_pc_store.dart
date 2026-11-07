@@ -18,6 +18,7 @@ class PairedPc {
     this.remoteAddress,
     this.remotePort,
     this.nickname,
+    this.kind = DeviceKinds.pc,
   });
 
   factory PairedPc.fromJson(Map<String, dynamic> json) => PairedPc(
@@ -39,6 +40,9 @@ class PairedPc {
 
         // Absent from records written before PCs could be renamed: the PC's own name is used.
         nickname: _nonEmpty(json['nickname']),
+
+        // Absent from records written before phones could host, which were all PCs.
+        kind: DeviceKinds.fromJson(json['kind']),
       );
 
   static String? _nonEmpty(Object? value) =>
@@ -62,6 +66,12 @@ class PairedPc {
 
   /// The name to show for this PC everywhere in the app.
   String get displayName => nickname ?? deviceName;
+
+  /// [DeviceKinds.pc] or [DeviceKinds.phone]: whether this is a Windows PC or another phone
+  /// sharing its screen. Decides the layout of the remote screen and the controls offered.
+  final String kind;
+
+  bool get isPhone => kind == DeviceKinds.phone;
 
   /// The PC's certificate fingerprint, learned from the QR code and pinned from then on.
   final String fingerprint;
@@ -109,6 +119,7 @@ class PairedPc {
         if (remoteAddress != null) 'remoteAddress': remoteAddress,
         if (remotePort != null) 'remotePort': remotePort,
         if (nickname != null) 'nickname': nickname,
+        if (kind != DeviceKinds.pc) 'kind': kind,
       };
 
   PairedPc copyWith({
@@ -117,6 +128,7 @@ class PairedPc {
     int? lastPort,
     DateTime? lastSeenAt,
     List<String>? permissions,
+    String? kind,
   }) =>
       PairedPc(
         deviceId: deviceId,
@@ -130,6 +142,7 @@ class PairedPc {
         remoteAddress: remoteAddress,
         remotePort: remotePort,
         nickname: nickname,
+        kind: kind ?? this.kind,
       );
 
   /// A copy with the nickname replaced, or removed when [name] is null or blank, so the PC's
@@ -148,6 +161,7 @@ class PairedPc {
         remoteAddress: remoteAddress,
         remotePort: remotePort,
         nickname: _nonEmpty(name),
+        kind: kind,
       );
 
   /// A copy with the remote address replaced, or removed when [remote] is null.
@@ -166,6 +180,7 @@ class PairedPc {
         remoteAddress: remote?.host,
         remotePort: remote?.port,
         nickname: nickname,
+        kind: kind,
       );
 }
 

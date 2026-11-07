@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Lets another phone you have paired tap, swipe and type on this phone while you share its screen from PC Remote → Share this phone. PC Remote uses this only while sharing is on, never reads your screen\'s text for any other purpose, and never acts on apps you have blocked.</string>
+</resources>

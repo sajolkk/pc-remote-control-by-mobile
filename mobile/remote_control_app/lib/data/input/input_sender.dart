@@ -22,6 +22,9 @@ class InputFault {
           ErrorCodes.permissionDenied =>
             'This device is not allowed to control the mouse and keyboard. Enable it on the PC.',
           ErrorCodes.sessionUnavailable => 'Nobody is signed in to the PC, so there is nothing to control.',
+          ErrorCodes.blockedByOwner =>
+            'The app open on the phone is blocked by its owner. Touches do nothing until another '
+                'app is in front.',
           ErrorCodes.unknownCommand ||
           ErrorCodes.notSupported =>
             'This PC cannot be controlled from the phone. Update PC-Remote on the PC.',

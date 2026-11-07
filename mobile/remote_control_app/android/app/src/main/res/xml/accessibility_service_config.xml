@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The accessibility service that performs a viewer's touches and keys on this phone, and reports
+  which app is in front for the owner's block list.
+
+  flagRetrieveInteractiveWindows: the window list, so the app in front is read from the windows
+  rather than from each event's package (the keyboard's window must not hide the app behind it).
+  canPerformGestures: taps, swipes and drags. canRetrieveWindowContent: typing into the focused
+  field. canTakeScreenshot: the Screenshot button on the viewer (Android 11 and later).
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="50"
+    android:settingsActivity="com.pcremote.remote_control_app.MainActivity" />

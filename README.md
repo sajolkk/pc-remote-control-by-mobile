@@ -31,6 +31,9 @@ From your phone, on the same Wi-Fi:
 - reach the PC from any network (mobile data, another Wi-Fi) through your own VPN (Tailscale,
   WireGuard, ZeroTier) by giving the paired PC a remote address ([how](#from-any-network))
 - see exactly which permissions the PC has granted this device
+- share an Android phone's screen with another phone running the same app, which pairs by QR code
+  and controls it with taps, swipes, typing and the Back/Home/Recents buttons, while the owner
+  blocks apps viewers must never see ([Android host mode](shared/docs/05-android-host-mode.md))
 
 ## What it deliberately will not do
 
@@ -152,3 +155,6 @@ builds `PC-Remote-Setup.exe`.
 - [Phase 3 streaming notes](shared/docs/03-phase3-streaming-notes.md) — capture, encoding and
   WebRTC: the library spike, the media plane's security properties, measurements, and what is
   still unverified.
+- [Android host mode](shared/docs/05-android-host-mode.md) — one phone controlling another: the
+  permissions Android needs, the Play accessibility declaration, the owner's block list, where the
+  phone host departs from the PC agent, and its limits.

@@ -93,6 +93,10 @@ class Commands {
   static const fileCopy = 'file.copy';
   static const fileMove = 'file.move';
   static const fileDelete = 'file.delete';
+
+  // A phone acting as the host (Android host mode). The PC does not know it; the app offers it
+  // only to a host whose kind is [DeviceKinds.phone]. Arguments are in input_messages.dart.
+  static const phoneNav = 'phone.nav';
 }
 
 /// Event topics the PC pushes.
@@ -142,6 +146,11 @@ class ErrorCodes {
   static const accessDenied = 'E_ACCESS_DENIED';
   static const internal = 'E_INTERNAL';
   static const busy = 'E_BUSY';
+
+  /// A phone host's owner has blocked the app in front, or the app asked for, from remote
+  /// access. Input is dropped and `app.launch` refused with this code until the owner changes
+  /// the list or another app comes to the front. Never sent by a PC.
+  static const blockedByOwner = 'E_BLOCKED_BY_OWNER';
 }
 
 /// Permission group names. Must match `PermissionSet` on the PC.
@@ -192,6 +201,22 @@ class Capabilities {
   static const powerSignOut = 'power.signout';
   static const wakeOnLan = 'wol';
   static const sessionAgent = 'session.agent';
+
+  /// The host is an Android phone and takes [Commands.phoneNav]: Back, Home, Recents, lock and
+  /// the notification shade. Advertised only by a phone in host mode.
+  static const phoneNav = 'phone.nav';
+}
+
+/// What kind of device a host is. A PC omits the field everywhere, so a missing value is a PC.
+class DeviceKinds {
+  const DeviceKinds._();
+
+  static const pc = 'pc';
+  static const phone = 'phone';
+
+  /// Reads a wire value, treating anything unknown or absent as a PC: the only kind that existed
+  /// before phones could host.
+  static String fromJson(Object? value) => value == phone ? phone : pc;
 }
 
 /// A failure returned by the PC.
@@ -287,6 +312,7 @@ class DiscoveryBeacon {
     required this.port,
     required this.protocolVersion,
     required this.address,
+    this.kind = DeviceKinds.pc,
   });
 
   factory DiscoveryBeacon.fromJson(Map<String, dynamic> json, String address) => DiscoveryBeacon(
@@ -295,6 +321,7 @@ class DiscoveryBeacon {
         port: json['port'] as int? ?? 0,
         protocolVersion: json['proto'] as int? ?? 1,
         address: address,
+        kind: DeviceKinds.fromJson(json['kind']),
       );
 
   final String deviceId;
@@ -302,6 +329,22 @@ class DiscoveryBeacon {
   final int port;
   final int protocolVersion;
   final String address;
+
+  /// [DeviceKinds.pc] or [DeviceKinds.phone]. A PC's beacon has no such field.
+  final String kind;
+
+  bool get isPhone => kind == DeviceKinds.phone;
+
+  /// The JSON body a host answers a probe with, after [DiscoveryConstants.responseMagic]. The
+  /// same fields a PC sends, plus the kind; the address is where the datagram came from.
+  Map<String, dynamic> toJson() => {
+        'v': 1,
+        'id': deviceId,
+        'name': deviceName,
+        'port': port,
+        'proto': protocolVersion,
+        if (kind != DeviceKinds.pc) 'kind': kind,
+      };
 
   /// Whether this PC speaks a protocol version this app understands.
   bool get isCompatible =>
@@ -328,6 +371,7 @@ class PairingQrPayload {
     required this.token,
     required this.port,
     required this.hosts,
+    this.kind = DeviceKinds.pc,
   });
 
   /// Parses a scanned QR code, returning null when it is not one of ours.
@@ -354,6 +398,7 @@ class PairingQrPayload {
         hosts: (decoded['h'] as List<dynamic>? ?? const [])
             .whereType<String>()
             .toList(growable: false),
+        kind: DeviceKinds.fromJson(decoded['k']),
       );
     } on FormatException {
       return null;
@@ -366,6 +411,24 @@ class PairingQrPayload {
   final String token;
   final int port;
   final List<String> hosts;
+
+  /// What is offering to be controlled. A PC's QR code has no such field.
+  final String kind;
+
+  bool get isPhone => kind == DeviceKinds.phone;
+
+  /// The JSON a host puts in its QR code: the same short names a PC uses, so one scanner reads
+  /// both, plus `k` when the host is a phone.
+  String encode() => jsonEncode({
+        'v': 1,
+        'id': deviceId,
+        'n': deviceName,
+        'fp': fingerprint,
+        't': token,
+        'p': port,
+        'h': hosts,
+        if (kind != DeviceKinds.pc) 'k': kind,
+      });
 }
 
 /// Encodes and decodes the base64url form the PC uses for binary values.

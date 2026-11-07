@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
+import '../../protocol/input_messages.dart';
 import '../../protocol/protocol.dart';
+import '../host/blocked_apps_screen.dart';
+import '../host/share_phone_screen.dart';
 
 /// This device's identity, and what it can do on each PC.
 ///
@@ -148,6 +151,30 @@ class SettingsScreen extends ConsumerWidget {
             child: Column(
               children: [
                 ListTile(
+                  leading: const Icon(Icons.mobile_screen_share_outlined),
+                  title: const Text('Share this phone'),
+                  subtitle: const Text('Let another phone see and control this one'),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(builder: (_) => const SharePhoneScreen()),
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.block),
+                  title: const Text('Blocked apps'),
+                  subtitle: const Text('Apps a viewer of this phone can never see or touch'),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(builder: (_) => const BlockedAppsScreen()),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          Card(
+            child: Column(
+              children: [
+                ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('About remote unlock'),
                   subtitle: const Text('Unlocking the PC from this phone'),
@@ -194,6 +221,9 @@ class SettingsScreen extends ConsumerWidget {
         Capabilities.powerSignOut => 'Sign out',
         Capabilities.wakeOnLan => 'Wake on LAN',
         Capabilities.sessionAgent => 'Desktop agent running',
+        Capabilities.phoneNav => 'Phone navigation',
+        InputCapabilities.mouse => 'Touch / mouse',
+        InputCapabilities.keyboard => 'Keyboard',
         _ => capability,
       };
 

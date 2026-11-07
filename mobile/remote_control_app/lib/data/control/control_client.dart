@@ -487,6 +487,7 @@ class HelloResult {
     required this.permissions,
     required this.capabilities,
     required this.keepaliveTimeoutSeconds,
+    this.deviceKind = DeviceKinds.pc,
   });
 
   factory HelloResult.fromJson(Map<String, dynamic> json) => HelloResult(
@@ -500,6 +501,7 @@ class HelloResult {
         capabilities:
             (json['capabilities'] as List<dynamic>? ?? const []).whereType<String>().toList(),
         keepaliveTimeoutSeconds: json['keepaliveTimeoutSec'] as int? ?? 15,
+        deviceKind: DeviceKinds.fromJson(json['deviceKind']),
       );
 
   final int version;
@@ -510,6 +512,9 @@ class HelloResult {
   final List<String> permissions;
   final List<String> capabilities;
   final int keepaliveTimeoutSeconds;
+
+  /// [DeviceKinds.pc] or [DeviceKinds.phone]. A PC sends no such field.
+  final String deviceKind;
 
   bool has(String capability) => capabilities.contains(capability);
 

@@ -36,6 +36,11 @@ import 'remote_keyboard.dart';
 /// **Nothing stays held.** Whenever control ends — switched off, tab left, app backgrounded,
 /// stream stopped or paused, permission withdrawn — the PC is told to release every key and button
 /// this phone was holding.
+///
+/// **A phone host is laid out as a phone.** The picture is portrait, touches are the phone-touch
+/// style (a moving finger drags at once), a bar of Back, Home, Recents, notifications, lock and
+/// volume sits under the picture, full screen keeps the orientation, and the owner's block list
+/// shows as a placeholder with its own words.
 class RemoteDesktopScreen extends StatefulWidget {
   const RemoteDesktopScreen({super.key, required this.connection});
 
@@ -77,6 +82,7 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _connection = widget.connection..addListener(_onConnectionChanged);
+    if (_connection.status.pc?.isPhone == true) _pointerStyle = PointerStyle.touch;
     _media = MediaClient(_connection)..addListener(_onMediaChanged);
     _input = InputSender(_connection.send, onFault: (fault) => _snack(fault.message));
     _keyboard = RemoteKeyboardController(_input);
@@ -212,7 +218,11 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
                 ? _ControlMode.viewOnly
                 : !canPoint
                     ? _ControlMode.keyboardOnly
-                    : (_pointerStyle == PointerStyle.direct ? _ControlMode.direct : _ControlMode.trackpad);
+                    : switch (_pointerStyle) {
+                        PointerStyle.direct => _ControlMode.direct,
+                        PointerStyle.trackpad => _ControlMode.trackpad,
+                        PointerStyle.touch => _ControlMode.touch,
+                      };
 
     return PopScope(
       // A drag that starts at the edge of the phone's screen is also Android's back gesture, and
@@ -236,6 +246,12 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
                 Expanded(child: _stage(state, mode, canPoint: canPoint, canType: canType)),
                 if (_keyboardOpen && controlling && canType)
                   SpecialKeysBar(controller: _keyboard, onClose: _closeKeyboard, onExplain: _snack),
+                if (_isPhone && controlling && state.phase != MediaPhase.failed)
+                  _PhoneNavBar(
+                    onNav: _nav,
+                    onVolume: _volume,
+                    canLock: status.has(Capabilities.phoneNav),
+                  ),
               ],
             ),
           ),
@@ -266,6 +282,24 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
 
   String get _pcName => _connection.status.pc?.displayName ?? 'PC';
 
+  /// Whether the host is another phone: decided by its pairing record, or by it advertising the
+  /// phone navigation command (a record from before kinds existed).
+  bool get _isPhone =>
+      _connection.status.pc?.isPhone == true || _connection.status.has(Capabilities.phoneNav);
+
+  void _nav(String action) {
+    _input.releaseAll();
+    _connection.send(Commands.phoneNav, args: InputArgs.phoneNav(action)).then((response) {
+      if (response != null && !response.ok && mounted) {
+        _snack(InputFault.from(response.error ??
+                const ProtocolError(code: ErrorCodes.internal, message: 'The phone refused.'))
+            .message);
+      }
+    });
+  }
+
+  void _volume(int vk) => _input.tapKey(vk);
+
   /// Back to the list of PCs. The stream stops as this screen goes.
   void _leave() {
     _input.releaseAll();
@@ -293,7 +327,8 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
         Positioned.fill(child: _video(state, pointing: pointing)),
         if (_keyboardOpen && controlling && canType)
           Positioned(left: 0, top: 0, child: RemoteKeyboardField(controller: _keyboard)),
-        if (state.phase == MediaPhase.paused) _PausedOverlay(message: state.message),
+        if (state.phase == MediaPhase.paused)
+          _PausedOverlay(message: state.message, reason: state.quality?.reason),
         if (state.phase == MediaPhase.negotiating || state.phase == MediaPhase.connecting)
           _Progress(message: state.message ?? 'Connecting…'),
         if (state.phase == MediaPhase.failed || state.phase == MediaPhase.idle)
@@ -345,6 +380,7 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
           onExplainPermission: _explainPermission,
           panMode: _panMode,
           onTogglePanMode: _togglePanMode,
+          isPhone: _isPhone,
         ),
         Positioned(
           top: 50,
@@ -429,6 +465,13 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
         });
         _snack(_ControlMode.trackpad.hint);
 
+      case _ControlChoice.touch:
+        setState(() {
+          _controlWanted = true;
+          _pointerStyle = PointerStyle.touch;
+        });
+        _snack(_ControlMode.touch.hint);
+
       case _ControlChoice.keyboardOnly:
         setState(() => _controlWanted = true);
 
@@ -485,6 +528,16 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
 
   static const _guide = <(String, List<String>)>[
     (
+      'Phone touch (another phone)',
+      [
+        'Tap: tap the phone where you touch',
+        'Drag: swipe or drag on the phone, as your finger moves',
+        'Touch and hold, then lift: long press',
+        'Two-finger drag: scroll; pinch: zoom the view',
+        'The bar under the picture: Back, Home, Recents, notifications, lock, volume',
+      ],
+    ),
+    (
       'Touch',
       [
         'Tap: left click where you touch',
@@ -530,8 +583,11 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
       return (
         Icons.visibility_off_outlined,
         'Screen viewing is not allowed',
-        'This device has not been granted "View screen" on the PC. The PC\'s owner can grant it '
-            'in PC-Remote on the PC.',
+        _isPhone
+            ? 'The phone\'s owner has not allowed this device to see the screen. They can allow it '
+                'under Paired devices in Share this phone.'
+            : 'This device has not been granted "View screen" on the PC. The PC\'s owner can grant '
+                'it in PC-Remote on the PC.',
       );
     }
 
@@ -619,9 +675,14 @@ class _RemoteDesktopScreenState extends State<RemoteDesktopScreen> with WidgetsB
       await _exitFullscreen();
     } else {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      await SystemChrome.setPreferredOrientations(
-        [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight],
-      );
+
+      // A PC's screen is wide, so full screen turns the phone sideways. Another phone's screen is
+      // tall, and it stays the way it is held.
+      if (!_isPhone) {
+        await SystemChrome.setPreferredOrientations(
+          [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight],
+        );
+      }
     }
 
     if (mounted) setState(() => _fullscreen = !_fullscreen);
@@ -654,9 +715,13 @@ enum _ControlMode {
   /// The PC takes keys but not the mouse.
   keyboardOnly,
   direct,
-  trackpad;
+  trackpad,
 
-  bool get isControlling => this == keyboardOnly || this == direct || this == trackpad;
+  /// The host is a phone: a moving finger drags at once.
+  touch;
+
+  bool get isControlling =>
+      this == keyboardOnly || this == direct || this == trackpad || this == touch;
 
   IconData get icon => switch (this) {
         unsupported || viewOnly => Icons.visibility_outlined,
@@ -664,6 +729,7 @@ enum _ControlMode {
         keyboardOnly => Icons.keyboard_outlined,
         direct => Icons.touch_app_outlined,
         trackpad => Icons.mouse_outlined,
+        touch => Icons.touch_app,
       };
 
   String get label => switch (this) {
@@ -672,6 +738,7 @@ enum _ControlMode {
         keyboardOnly => 'Keyboard control',
         direct => 'Touch control',
         trackpad => 'Trackpad control',
+        touch => 'Phone touch',
       };
 
   /// The one-line reminder shown when the mode is chosen.
@@ -680,12 +747,79 @@ enum _ControlMode {
             'drag. Pinch zooms, three fingers move the view.',
         trackpad => 'Trackpad: drag to move the cursor, tap to click, two-finger tap for right '
             'click. Two fingers scroll, pinch zooms, three fingers move the view.',
+        touch => 'Phone touch: tap, drag and hold land on the phone as you do them. Two fingers '
+            'scroll, pinch zooms the view.',
         _ => label,
       };
 }
 
 /// The entries of the toolbar's control menu.
-enum _ControlChoice { viewOnly, direct, trackpad, keyboardOnly, guide }
+enum _ControlChoice { viewOnly, direct, trackpad, touch, keyboardOnly, guide }
+
+/// Back, Home, Recents and the other things a phone has buttons for, drawn under the picture of a
+/// phone host so the viewer never has to find them inside the picture.
+class _PhoneNavBar extends StatelessWidget {
+  const _PhoneNavBar({required this.onNav, required this.onVolume, required this.canLock});
+
+  final ValueChanged<String> onNav;
+  final ValueChanged<int> onVolume;
+  final bool canLock;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black,
+      child: SafeArea(
+        top: false,
+        child: IconTheme(
+          data: const IconThemeData(color: Colors.white),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              IconButton(
+                tooltip: 'Volume down',
+                icon: const Icon(Icons.volume_down_outlined),
+                onPressed: () => onVolume(VirtualKeys.volumeDown),
+              ),
+              IconButton(
+                tooltip: 'Back',
+                icon: const Icon(Icons.arrow_back_ios_new),
+                onPressed: () => onNav(PhoneNavActions.back),
+              ),
+              IconButton(
+                tooltip: 'Home',
+                icon: const Icon(Icons.radio_button_unchecked),
+                iconSize: 28,
+                onPressed: () => onNav(PhoneNavActions.home),
+              ),
+              IconButton(
+                tooltip: 'Recent apps',
+                icon: const Icon(Icons.crop_square),
+                onPressed: () => onNav(PhoneNavActions.recents),
+              ),
+              IconButton(
+                tooltip: 'Notifications',
+                icon: const Icon(Icons.notifications_none),
+                onPressed: () => onNav(PhoneNavActions.notifications),
+              ),
+              if (canLock)
+                IconButton(
+                  tooltip: 'Lock the phone',
+                  icon: const Icon(Icons.lock_outline),
+                  onPressed: () => onNav(PhoneNavActions.lock),
+                ),
+              IconButton(
+                tooltip: 'Volume up',
+                icon: const Icon(Icons.volume_up_outlined),
+                onPressed: () => onVolume(VirtualKeys.volumeUp),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// The small label saying what touches do right now.
 class _ModeBadge extends StatelessWidget {
@@ -835,6 +969,7 @@ class _TopBar extends StatelessWidget {
     required this.onExplainPermission,
     required this.panMode,
     required this.onTogglePanMode,
+    this.isPhone = false,
   });
 
   final MediaViewState state;
@@ -864,6 +999,9 @@ class _TopBar extends StatelessWidget {
   /// Whether the move tool is on: touches move the picture instead of controlling the PC.
   final bool panMode;
   final VoidCallback onTogglePanMode;
+
+  /// Whether the host is a phone, which offers the phone-touch style.
+  final bool isPhone;
 
   @override
   Widget build(BuildContext context) {
@@ -915,6 +1053,16 @@ class _TopBar extends StatelessWidget {
           icon: Icon(mode.icon, color: mode.isControlling ? Colors.greenAccent : Colors.white),
           onSelected: onSelectControl,
           itemBuilder: (_) => [
+            if (showPointerStyles && isPhone)
+              CheckedPopupMenuItem(
+                value: _ControlChoice.touch,
+                checked: mode == _ControlMode.touch,
+                child: const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('Phone touch'),
+                  subtitle: Text('Tap, drag and hold as on the phone itself'),
+                ),
+              ),
             if (showPointerStyles) ...[
               CheckedPopupMenuItem(
                 value: _ControlChoice.direct,
@@ -1103,12 +1251,18 @@ class _Telemetry extends StatelessWidget {
 }
 
 class _PausedOverlay extends StatelessWidget {
-  const _PausedOverlay({this.message});
+  const _PausedOverlay({this.message, this.reason});
 
   final String? message;
 
+  /// One of `MediaPauseReasons`, which picks the icon: a block sign for the owner's block list, a
+  /// lock for everything else.
+  final String? reason;
+
   @override
   Widget build(BuildContext context) {
+    final blocked = reason == MediaPauseReasons.blockedByOwner;
+
     return Positioned.fill(
       child: ColoredBox(
         color: Colors.black87,
@@ -1118,7 +1272,18 @@ class _PausedOverlay extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.lock_outline, color: Colors.white70, size: 48),
+                Icon(
+                  blocked ? Icons.block : Icons.lock_outline,
+                  color: blocked ? Colors.redAccent : Colors.white70,
+                  size: 48,
+                ),
+                if (blocked) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Blocked by the owner',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                  ),
+                ],
                 const SizedBox(height: 16),
                 Text(
                   message ?? 'The PC paused the stream.',

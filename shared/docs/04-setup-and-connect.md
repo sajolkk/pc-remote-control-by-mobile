@@ -245,6 +245,10 @@ signing, and run it on the device. iOS has not been tested yet.
 It never asks for the microphone, and the camera is never used for streaming: the stream is
 receive-only.
 
+Only if you use **Share this phone** (controlling one Android phone from another) does it also ask
+for screen capture, the notification that shows while sharing, and the accessibility service that
+performs the other phone's touches. That is described in [Android host mode](05-android-host-mode.md).
+
 ---
 
 ## Part 3 — Pair the phone with the PC (once)
@@ -287,6 +291,12 @@ search cannot see across.
 You only pair once per phone. To pair another phone, repeat it.
 
 ---
+
+### 3.3 Pairing with another phone
+
+A second Android phone running this app can be paired and controlled the same way: on it, open
+**Settings → Share this phone → Start sharing** and scan the QR code it shows, or tap it under
+*Found on this network* and compare the codes. See [Android host mode](05-android-host-mode.md).
 
 ## Part 4 — Connect and use it
 

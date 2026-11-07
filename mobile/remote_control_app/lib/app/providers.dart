@@ -5,6 +5,10 @@ import '../data/identity/device_identity.dart';
 import '../data/storage/paired_pc_store.dart';
 import '../domain/connection_controller.dart';
 import '../domain/connection_manager.dart';
+import '../host/android_host_platform.dart';
+import '../host/host_controller.dart';
+import '../host/host_identity.dart';
+import '../host/paired_viewer_store.dart';
 import '../protocol/protocol.dart';
 
 /// This device's identity store.
@@ -60,6 +64,28 @@ final connectionManagerProvider = ChangeNotifierProvider<ConnectionManager>((ref
     ),
   );
 });
+
+/// The certificate this phone presents when it is the one being controlled (host mode).
+final hostIdentityStoreProvider = Provider<HostIdentityStore>(
+  (ref) => HostIdentityStore(deviceIdentity: ref.watch(identityStoreProvider)),
+);
+
+/// The devices allowed to view and control this phone.
+final pairedViewerStoreProvider = Provider<PairedViewerStore>((ref) => SecurePairedViewerStore());
+
+/// The native half of host mode.
+final hostPlatformProvider = Provider<AndroidHostPlatform>((ref) => AndroidHostPlatform());
+
+/// This phone as a host: sharing state, the QR code, viewers and the block list. One for the
+/// whole app, because sharing outlives the screen that started it.
+final hostControllerProvider = ChangeNotifierProvider<HostController>(
+  (ref) => HostController(
+    identityStore: ref.watch(hostIdentityStoreProvider),
+    viewerStore: ref.watch(pairedViewerStoreProvider),
+    platform: ref.watch(hostPlatformProvider),
+    deviceName: defaultHostName,
+  ),
+);
 
 /// The selected PC's connection: the one the System, Manage and Settings tabs act on.
 ///

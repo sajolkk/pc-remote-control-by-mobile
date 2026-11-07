@@ -73,12 +73,19 @@ class MediaPauseReasons {
   static const monitorLost = 'monitor_lost';
   static const recovering = 'recovering';
 
+  /// A phone host's owner has blocked the app that is in front. The host sends a blank picture
+  /// and drops every input until another app is in front. Never sent by a PC.
+  static const blockedByOwner = 'blocked_by_owner';
+
   static String describe(String? reason) => switch (reason) {
         desktopUnavailable =>
           'The PC is locked or showing a secure prompt. Windows does not allow that screen to be '
               'captured — unlock it at the PC and the picture returns by itself.',
         monitorLost => 'The monitor being shown was disconnected.',
         recovering => 'The display changed. Reconnecting to it…',
+        blockedByOwner =>
+          'The app open on the phone is blocked by its owner. Its screen is hidden and touches do '
+              'nothing until another app is in front.',
         _ => 'The PC paused the stream.',
       };
 }

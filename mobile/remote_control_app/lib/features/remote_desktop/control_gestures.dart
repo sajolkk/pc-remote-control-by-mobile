@@ -13,6 +13,11 @@ enum PointerStyle {
 
   /// The picture is a laptop touchpad: the finger pushes the cursor around.
   trackpad,
+
+  /// The picture is another phone's touch screen: a finger that moves drags from the moment it
+  /// moves, no hold needed, because on a phone a swipe *is* the scroll and a drag *is* the gesture.
+  /// A tap taps, a hold long-presses. Offered for phone hosts.
+  touch,
 }
 
 /// Turns raw touches into pointer input for the PC, and into zooming and panning of the view.
@@ -41,6 +46,11 @@ enum PointerStyle {
 ///
 /// [PointerStyle.trackpad]: drag = move the cursor; tap = left click at the cursor; two-finger tap =
 /// right click; tap, then touch again and drag = drag with the left button held.
+///
+/// [PointerStyle.touch]: like direct, except that a finger moving before the hold drags (button
+/// down where it landed, then moves) instead of scrolling: the host is a phone, where dragging the
+/// content is how it scrolls, and a swipe must arrive as a swipe. Hold still, then lift = long
+/// press (sent as the right click, which a phone host performs as a long press).
 ///
 /// Which of scroll and pinch a two-finger gesture is gets decided once, by whichever happens
 /// first — the fingers travelling together or their spacing changing — and stays decided until
@@ -172,6 +182,23 @@ class ControlGestures {
       case _Phase.directPending:
         if ((position - _downAt).distance < dragSlop) return;
 
+        if (style == PointerStyle.touch) {
+          // On a phone the swipe is the gesture: the finger goes down where it landed and moves.
+          _longPress?.cancel();
+          _pressModifiers();
+          _sender.button(
+            MouseButton.left,
+            down: true,
+            x: _downOnMonitor!.dx,
+            y: _downOnMonitor!.dy,
+            monitorId: monitorId(),
+          );
+          _buttonHeld = true;
+          _phase = _Phase.directDrag;
+          _dragTo(position);
+          return;
+        }
+
         // Moving before the hold: a swipe, which scrolls whatever the finger landed on.
         _longPress?.cancel();
         _scrollOnMonitor = _downOnMonitor;
@@ -214,10 +241,10 @@ class ControlGestures {
           _lastFocal = focal;
           _lastSpan = span;
         } else if ((focal - _startFocal).distance >= scrollSlop) {
-          // In direct style the wheel turns over whatever the fingers are on, so a scroll that
-          // starts on the bars has nothing to turn over.
-          _scrollOnMonitor = style == PointerStyle.direct ? toMonitor(_startFocal) : null;
-          if (style == PointerStyle.direct && _scrollOnMonitor == null) {
+          // In direct and touch styles the wheel turns over whatever the fingers are on, so a
+          // scroll that starts on the bars has nothing to turn over.
+          _scrollOnMonitor = style != PointerStyle.trackpad ? toMonitor(_startFocal) : null;
+          if (style != PointerStyle.trackpad && _scrollOnMonitor == null) {
             _phase = _Phase.spent;
             return;
           }
@@ -305,7 +332,7 @@ class ControlGestures {
     _downAt = position;
     _downTime = time;
 
-    if (style == PointerStyle.direct) {
+    if (style != PointerStyle.trackpad) {
       _finishTapHold();
       _downOnMonitor = toMonitor(position);
       if (_downOnMonitor == null) {

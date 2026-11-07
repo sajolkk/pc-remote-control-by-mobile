@@ -16,6 +16,7 @@ class _App {
     required this.hasWindow,
     this.publisher,
     this.iconPng,
+    this.blocked = false,
   });
 
   factory _App.fromJson(Map<String, dynamic> json) => _App(
@@ -25,6 +26,7 @@ class _App {
         hasWindow: json['hasWindow'] as bool? ?? false,
         publisher: json['publisher'] as String?,
         iconPng: json['iconPng'] as String?,
+        blocked: json['blocked'] as bool? ?? false,
       );
 
   final String id;
@@ -33,6 +35,9 @@ class _App {
   final bool hasWindow;
   final String? publisher;
   final String? iconPng;
+
+  /// Blocked from remote access by a phone host's owner. A PC never sets this.
+  final bool blocked;
 }
 
 /// Applications and browser control.
@@ -374,6 +379,8 @@ class _AppsScreenState extends ConsumerState<AppsScreen> {
           'Nobody is signed in to the PC, so its apps are unavailable.',
         ErrorCodes.invalidArguments => error?.message ?? 'That request was not valid.',
         ErrorCodes.notFound => error?.message ?? 'That app is no longer there.',
+        ErrorCodes.blockedByOwner =>
+          'The phone\'s owner has blocked that app from remote access.',
         _ => error?.message ?? 'The command failed.',
       };
 
@@ -416,6 +423,16 @@ class _AppTile extends StatelessWidget {
       } on FormatException {
         leading = const Icon(Icons.apps);
       }
+    }
+
+    if (app.blocked) {
+      return ListTile(
+        leading: SizedBox(width: 32, child: Center(child: leading)),
+        title: Text(app.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: const Text('Blocked by the phone\'s owner', maxLines: 1),
+        trailing: Icon(Icons.block, color: Theme.of(context).colorScheme.error),
+        enabled: false,
+      );
     }
 
     return ListTile(

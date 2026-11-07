@@ -21,6 +21,16 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!--
+      Host mode ("Share this phone"): the screen is captured through MediaProjection, which Android
+      only allows while a foreground service of type mediaProjection is running, and the owner's
+      touches are performed by an accessibility service (declared below). The notification
+      permission is for the service's "This phone is being shared" notification on Android 13+.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- The camera is for pairing convenience; a device without one must still install. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
@@ -55,6 +65,29 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Keeps the capture and the TLS listener alive while the app is in the background. -->
+        <service
+            android:name=".host.SharingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!--
+          Performs a paired viewer's taps, swipes and typing, and reports which app is in front.
+          Only Android may bind it, and only after the owner turns it on in Settings → Accessibility.
+        -->
+        <service
+            android:name=".host.RemoteInputAccessibilityService"
+            android:exported="true"
+            android:label="PC Remote: remote control"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -70,6 +103,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Host mode lists the apps with a launcher icon, for the viewer and the owner's block list. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
         </intent>
     </queries>
 </manifest>
