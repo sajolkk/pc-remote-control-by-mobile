@@ -68,6 +68,7 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
 
     private Task? _acceptLoop;
     private bool _firstInstanceCreated;
+    private bool _acceptFailing;
 
     // Stored as an int rather than int? because a nullable cannot be volatile, and this is
     // written from the service's session-change callback while being read by forwarding.
@@ -301,6 +302,7 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
                 bool first = !_firstInstanceCreated;
                 server = CreateServerStream(first);
                 _firstInstanceCreated = true;
+                _acceptFailing = false;
 
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
 
@@ -327,7 +329,18 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "The IPC accept loop failed; retrying shortly.");
+                // The first failure of a run is an error; the rest of the run is one line every
+                // two seconds, which once filled a 10 MB log in a day and said nothing new.
+                if (_acceptFailing)
+                {
+                    _logger.LogDebug(ex, "The IPC accept loop is still failing; retrying shortly.");
+                }
+                else
+                {
+                    _acceptFailing = true;
+                    _logger.LogError(ex, "The IPC accept loop failed; retrying every two seconds until it works.");
+                }
+
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
@@ -456,20 +469,14 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
 
         _agents[key] = agent;
 
-        connection.Closed += (_, _) =>
+        connection.Closed += (_, _) => OnAgentConnectionClosed(key, agent, connection);
+
+        // Closed between the handshake completing and the handler being attached: the event has
+        // already fired, so the handler would never run.
+        if (!connection.IsConnected)
         {
-            // Compared by connection, not by record: a capabilities update replaces the record.
-            if (_agents.TryGetValue(key, out ConnectedAgent? current) &&
-                ReferenceEquals(current.Connection, connection))
-            {
-                _agents.TryRemove(key, out _);
-                _logger.LogInformation(
-                    "The {Kind} agent for session {SessionId} disconnected.",
-                    agent.Kind,
-                    agent.SessionId);
-                AgentDisconnected?.Invoke(this, agent.SessionId);
-            }
-        };
+            OnAgentConnectionClosed(key, agent, connection);
+        }
 
         _logger.LogInformation(
             "Session agent connected. Kind={Kind} Session={SessionId} User={User} Version={Version} " +
@@ -482,6 +489,51 @@ public sealed class SessionAgentRegistry : ISessionBridge, IAsyncDisposable
             string.Join(",", agent.Capabilities));
 
         AgentConnected?.Invoke(this, agent);
+    }
+
+    /// <summary>
+    /// Forgets a disconnected agent and releases its end of the pipe.
+    /// </summary>
+    /// <remarks>
+    /// <para>The server end of a pipe stays allocated until its stream is disposed, whether or not
+    /// the client is still there, and it counts against <see cref="IpcPipe.MaxServerInstances"/>
+    /// the whole time. Before this disposed it, every agent that disconnected — two per sleep and
+    /// wake of the PC — kept one instance for the rest of the service's life. After a few days none
+    /// were left: no agent could connect, the accept loop logged "all pipe instances are busy"
+    /// every two seconds, and the supervisor launched a new pair of agents every twenty seconds,
+    /// each with a tray icon of its own.</para>
+    ///
+    /// <para>Disposed on a thread-pool task rather than inline, because this runs from inside the
+    /// connection's own read pump, which disposal waits for.</para>
+    /// </remarks>
+    private void OnAgentConnectionClosed(
+        (int SessionId, SessionAgentKind Kind) key,
+        ConnectedAgent agent,
+        IpcConnection connection)
+    {
+        // Compared by connection, not by record: a capabilities update replaces the record.
+        if (_agents.TryGetValue(key, out ConnectedAgent? current) &&
+            ReferenceEquals(current.Connection, connection))
+        {
+            _agents.TryRemove(key, out _);
+            _logger.LogInformation(
+                "The {Kind} agent for session {SessionId} disconnected.",
+                agent.Kind,
+                agent.SessionId);
+            AgentDisconnected?.Invoke(this, agent.SessionId);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Disposing a closed agent connection failed.");
+            }
+        });
     }
 
     /// <summary>

@@ -116,11 +116,15 @@ internal static class LauncherMode
             // 1056: already running. That is fine; the agent may simply not be up yet.
             if (process is { HasExited: true, ExitCode: not 0 and not 1056 })
             {
-                Log.Warning("sc start {Service} exited with {Code}.", ServiceName, process.ExitCode);
+                int code = process.ExitCode;
+                Log.Warning("sc start {Service} exited with {Code}.", ServiceName, code);
 
+                // The code is shown because the dialog is all a user on another PC can send back:
+                // "not installed" and "installed but crashing at startup" need different repairs.
                 MessageBox.Show(
-                    "PC-Remote could not be started. It may not be installed.\n\n" +
-                    "Run PC-Remote-Setup.exe again to repair it.",
+                    $"PC-Remote could not be started: {DescribeStartFailure(code)} (error {code}).\n\n" +
+                    "Run PC-Remote-Setup.exe again to repair it. If that does not help, look in " +
+                    @"%ProgramData%\PCRemote\logs for the newest service-*.jsonl file.",
                     Title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
@@ -137,4 +141,17 @@ internal static class LauncherMode
             return false;
         }
     }
+
+    /// <summary>The service control manager's exit codes that a fresh installation can run into.</summary>
+    private static string DescribeStartFailure(int code) => code switch
+    {
+        5 => "access was denied",
+        1053 => "the service did not respond in time",
+        1058 => "the service is disabled",
+        1060 => "the PC-Remote service is not installed on this PC",
+        1067 => "the service stopped right after starting",
+        1069 => "the service account could not sign in",
+        1072 => "the service is being removed and must be reinstalled",
+        _ => "Windows reported an error",
+    };
 }

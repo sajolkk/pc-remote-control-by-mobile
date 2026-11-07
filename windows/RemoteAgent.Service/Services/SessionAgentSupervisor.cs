@@ -54,6 +54,21 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
     /// </remarks>
     private static readonly TimeSpan StartupGrace = TimeSpan.FromSeconds(20);
 
+    /// <summary>
+    /// How long a launched agent may run without connecting before it is treated as stuck,
+    /// stopped, and replaced.
+    /// </summary>
+    /// <remarks>
+    /// The grace above only delays the next launch; it does not stop one. While the service's pipe
+    /// was full and no agent could connect, that meant a new pair of agents every twenty seconds
+    /// for as long as the PC stayed awake: 149 were found running at once, each with its own tray
+    /// icon. So the supervisor now remembers the process it launched and never starts another of
+    /// the same kind beside it while it is alive. An agent that cannot connect gives up by itself
+    /// after <see cref="ServiceChannelClient.GiveUpAfter"/>; this limit, well above that, is only
+    /// for one that is hung.
+    /// </remarks>
+    private static readonly TimeSpan StuckAgentLimit = TimeSpan.FromMinutes(5);
+
     private const int MaxConsecutiveFailures = 5;
 
     private readonly SessionAgentLauncher _launcher;
@@ -127,13 +142,23 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
     {
         // A session change is a fresh start: whatever went wrong before may not apply to this
         // user, so the failure count and backoff are reset. The startup grace is cleared too,
-        // because an agent launched into the previous session is no longer the one we need.
+        // because an agent launched into the previous session is no longer the one we need — and
+        // neither is the process itself, so it stops blocking a launch into the new session. One
+        // launched into this same session (a lock or unlock changes the state, not the session)
+        // stays remembered, or the next tick would start a second one beside it.
+        int? sessionId = _sessionState.ActiveSessionId;
+
         foreach (LaunchState launch in _launchStates.Values)
         {
             launch.Reset();
+
+            if (launch.ProcessId != 0 && launch.SessionId != sessionId)
+            {
+                launch.Forget();
+            }
         }
 
-        _registry.SetActiveSession(_sessionState.ActiveSessionId);
+        _registry.SetActiveSession(sessionId);
     }
 
     private void OnAgentDisconnected(object? sender, int sessionId)
@@ -271,6 +296,46 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
                 return;
             }
 
+            // The one launched last is still running. It is either still starting, or it cannot
+            // reach the service and is retrying by itself; a second one beside it would be in the
+            // same position, with a second tray icon. Only one that has been at it far longer than
+            // it would wait by itself is stopped and replaced.
+            if (IsLaunchedAgentRunning(state, out TimeSpan age))
+            {
+                if (age < StuckAgentLimit)
+                {
+                    if (!state.ReportedWaiting && age >= StartupGrace)
+                    {
+                        state.ReportedWaiting = true;
+                        _logger.LogWarning(
+                            "The {Kind} agent for session {SessionId} (pid {ProcessId}) has run for {Seconds:F0}s " +
+                            "without connecting. Waiting for it rather than starting another beside it.",
+                            kind,
+                            sessionId,
+                            state.ProcessId,
+                            age.TotalSeconds);
+                    }
+
+                    return;
+                }
+
+                _logger.LogWarning(
+                    "The {Kind} agent for session {SessionId} (pid {ProcessId}) has not connected in " +
+                    "{Minutes:F0} minutes. Stopping it so a fresh one can be started.",
+                    kind,
+                    sessionId,
+                    state.ProcessId,
+                    age.TotalMinutes);
+
+                TryStopAgent(state.ProcessId);
+                state.Forget();
+
+                // Counted as a failure: an agent that hangs every time is backed off, and eventually
+                // given up on, like one that crashes every time.
+                RecordFailure(state, kind, sessionId, "it ran without ever connecting");
+                return;
+            }
+
             string token = _registry.IssueSpawnToken(sessionId, kind);
 
             var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -292,40 +357,126 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
                 state.ConsecutiveFailures = 0;
                 state.Backoff = MinBackoff;
 
-                // Give the new process time to connect before considering another launch, or the
-                // next monitor tick spawns a second agent while the first is still starting.
+                // Remembered so that no second agent of this kind is started while it runs.
+                state.ProcessId = result.ProcessId;
+                state.SessionId = sessionId;
+                state.LaunchedAt = DateTimeOffset.UtcNow;
+                state.ReportedWaiting = false;
+
+                // Give the new process time to connect before looking at it again, or the next
+                // monitor tick spends its time checking on an agent that is still starting.
                 state.NextAttemptAfter = DateTimeOffset.UtcNow.Add(StartupGrace);
                 return;
             }
 
-            state.ConsecutiveFailures++;
-            state.NextAttemptAfter = DateTimeOffset.UtcNow.Add(state.Backoff);
-            state.Backoff = TimeSpan.FromTicks(Math.Min(state.Backoff.Ticks * 2, MaxBackoff.Ticks));
-
-            if (state.ConsecutiveFailures >= MaxConsecutiveFailures)
-            {
-                _logger.LogError(
-                    "Giving up on starting the {Kind} agent for session {SessionId} after {Count} attempts: " +
-                    "{Reason} The features it provides stay unavailable until the session changes.",
-                    kind,
-                    sessionId,
-                    state.ConsecutiveFailures,
-                    result.FailureReason);
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "Could not start the {Kind} agent for session {SessionId} ({Reason}). " +
-                    "Retrying in {Backoff}s.",
-                    kind,
-                    sessionId,
-                    result.FailureReason,
-                    state.Backoff.TotalSeconds);
-            }
+            RecordFailure(state, kind, sessionId, result.FailureReason);
         }
         finally
         {
             _launchLock.Release();
+        }
+    }
+
+    private void RecordFailure(LaunchState state, SessionAgentKind kind, int sessionId, string? reason)
+    {
+        state.ConsecutiveFailures++;
+        state.NextAttemptAfter = DateTimeOffset.UtcNow.Add(state.Backoff);
+        state.Backoff = TimeSpan.FromTicks(Math.Min(state.Backoff.Ticks * 2, MaxBackoff.Ticks));
+
+        if (state.ConsecutiveFailures >= MaxConsecutiveFailures)
+        {
+            _logger.LogError(
+                "Giving up on starting the {Kind} agent for session {SessionId} after {Count} attempts: " +
+                "{Reason} The features it provides stay unavailable until the session changes.",
+                kind,
+                sessionId,
+                state.ConsecutiveFailures,
+                reason);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Could not start the {Kind} agent for session {SessionId} ({Reason}). " +
+                "Retrying in {Backoff}s.",
+                kind,
+                sessionId,
+                reason,
+                state.Backoff.TotalSeconds);
+        }
+    }
+
+    /// <summary>
+    /// Whether the process launched last for this kind is still running, and for how long.
+    /// </summary>
+    /// <remarks>
+    /// A process id can be reused once its process exits, so the name is checked too: a different
+    /// program that happens to have the old id is not an agent to wait for. Forgets the process
+    /// when it is gone, so the next launch is not blocked by a memory of it.
+    /// </remarks>
+    private bool IsLaunchedAgentRunning(LaunchState state, out TimeSpan age)
+    {
+        age = TimeSpan.Zero;
+
+        if (state.ProcessId == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)state.ProcessId);
+
+            if (!IsAgentProcess(process) || process.HasExited)
+            {
+                state.Forget();
+                return false;
+            }
+
+            age = DateTimeOffset.UtcNow - state.LaunchedAt;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            // No such process any more.
+            state.Forget();
+            return false;
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            // Exists, but cannot be inspected from here. Treated as running: a duplicate launch
+            // costs more than a late one.
+            _logger.LogDebug(ex, "Could not inspect the agent process {ProcessId}.", state.ProcessId);
+            age = DateTimeOffset.UtcNow - state.LaunchedAt;
+            return true;
+        }
+    }
+
+    private bool IsAgentProcess(System.Diagnostics.Process process) =>
+        string.Equals(
+            process.ProcessName,
+            Path.GetFileNameWithoutExtension(_agentExecutablePath),
+            StringComparison.OrdinalIgnoreCase);
+
+    private void TryStopAgent(uint processId)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)processId);
+
+            if (!IsAgentProcess(process))
+            {
+                return;
+            }
+
+            process.Kill();
+            process.WaitForExit(5_000);
+        }
+        catch (Exception ex) when (ex is ArgumentException
+                                   or InvalidOperationException
+                                   or NotSupportedException
+                                   or System.ComponentModel.Win32Exception)
+        {
+            _logger.LogWarning(ex, "Could not stop the agent process {ProcessId}.", processId);
         }
     }
 
@@ -351,11 +502,32 @@ public sealed class SessionAgentSupervisor : IAsyncDisposable
 
         public int ConsecutiveFailures { get; set; }
 
+        /// <summary>The process launched last, or 0 when none is remembered.</summary>
+        public uint ProcessId { get; set; }
+
+        /// <summary>The session it was launched into.</summary>
+        public int SessionId { get; set; }
+
+        public DateTimeOffset LaunchedAt { get; set; }
+
+        /// <summary>Whether its slowness to connect has been logged, so it is logged once.</summary>
+        public bool ReportedWaiting { get; set; }
+
+        /// <summary>Clears the failure history. The launched process stays remembered.</summary>
         public void Reset()
         {
             ConsecutiveFailures = 0;
             Backoff = MinBackoff;
             NextAttemptAfter = DateTimeOffset.MinValue;
+        }
+
+        /// <summary>Stops remembering the launched process.</summary>
+        public void Forget()
+        {
+            ProcessId = 0;
+            SessionId = 0;
+            LaunchedAt = default;
+            ReportedWaiting = false;
         }
     }
 

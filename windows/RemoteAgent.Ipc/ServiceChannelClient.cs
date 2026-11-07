@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -16,9 +17,11 @@ namespace RemoteAgent.Ipc;
 ///
 /// <para>Reconnection is the agent's responsibility, not the service's: if the service
 /// restarts, the agent's pipe dies but the agent process survives. It retries with backoff
-/// rather than exiting, because exiting would leave the desktop unreachable until the
+/// rather than exiting at once, because exiting would leave the desktop unreachable until the
 /// service noticed and respawned it — a slower and more visible failure than simply
-/// reconnecting (§6.4).</para>
+/// reconnecting (§6.4). The retrying is bounded by <see cref="GiveUpAfter"/>, though: the
+/// service starts a fresh agent whenever it has none, so an agent that has been unreachable for
+/// minutes is not keeping anything reachable, only keeping a process and a tray icon alive.</para>
 ///
 /// <para>One subtlety: a reconnect needs a fresh spawn token, and the agent only has the one
 /// it started with. So after the first successful handshake the token is kept for reuse,
@@ -69,6 +72,19 @@ public sealed class ServiceChannelClient : IAsyncDisposable
     /// </summary>
     internal Func<NamedPipeClientStream> CreateClientStream { get; init; } = IpcPipe.CreateClientStream;
 
+    /// <summary>
+    /// How long the agent keeps trying to reach the service before <see cref="RunAsync"/> gives
+    /// up and asks the host to exit.
+    /// </summary>
+    /// <remarks>
+    /// The service is the only thing that starts agents, and it starts another whenever it finds
+    /// none connected. While it cannot be reached, every agent it launched is stuck in this loop;
+    /// unbounded, they accumulated by the dozen, each with its own tray icon. Two minutes is long
+    /// enough to ride out a service restart and short enough that a stuck agent is gone before
+    /// anyone goes looking for it.
+    /// </remarks>
+    internal TimeSpan GiveUpAfter { get; init; } = TimeSpan.FromMinutes(2);
+
     /// <summary>Handles commands the service forwards. Set before connecting.</summary>
     public Func<IpcRequest, CancellationToken, Task<IpcResponse>>? RequestHandler { get; set; }
 
@@ -110,13 +126,15 @@ public sealed class ServiceChannelClient : IAsyncDisposable
         SessionAgentKinds.Parse(Environment.GetEnvironmentVariable(IpcPipe.AgentKindVariable));
 
     /// <summary>
-    /// Connects and handshakes, retrying until the token is rejected or cancellation.
+    /// Connects and handshakes, retrying until the token is rejected, the service has been out of
+    /// reach for <see cref="GiveUpAfter"/>, or cancellation.
     /// </summary>
     /// <returns>True once connected; false when the agent should exit.</returns>
     public async Task<bool> RunAsync(CancellationToken cancellationToken)
     {
         TimeSpan backoff = TimeSpan.FromSeconds(1);
         TimeSpan maxBackoff = TimeSpan.FromSeconds(30);
+        var unreachableFor = Stopwatch.StartNew();
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -128,6 +146,7 @@ public sealed class ServiceChannelClient : IAsyncDisposable
                     // Wait for the connection to end, then reconnect.
                     await WaitForCloseAsync(cancellationToken).ConfigureAwait(false);
                     backoff = TimeSpan.FromSeconds(1);
+                    unreachableFor.Restart();
                     continue;
 
                 case HandshakeOutcome.Rejected:
@@ -138,6 +157,15 @@ public sealed class ServiceChannelClient : IAsyncDisposable
 
                 case HandshakeOutcome.Unavailable:
                 default:
+                    if (unreachableFor.Elapsed >= GiveUpAfter)
+                    {
+                        _logger.LogWarning(
+                            "The PC-Remote service could not be reached for {Seconds:F0}s. Exiting; the service " +
+                            "starts a fresh agent once it can be reached again.",
+                            unreachableFor.Elapsed.TotalSeconds);
+                        return false;
+                    }
+
                     try
                     {
                         await Task.Delay(backoff, cancellationToken).ConfigureAwait(false);

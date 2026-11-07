@@ -58,8 +58,16 @@ public static class IpcPipe
     /// </summary>
     public const string AgentKindVariable = "PCREMOTE_AGENT_KIND";
 
-    /// <summary>Maximum concurrent server instances, one per plausible interactive session.</summary>
-    public const int MaxServerInstances = 8;
+    /// <summary>
+    /// Maximum concurrent server instances: two agents per plausible interactive session, plus
+    /// room for handshakes in flight and for agents whose disconnection has not been noticed yet.
+    /// </summary>
+    /// <remarks>
+    /// Every server end that is still open counts, connected or not, so the registry disposes each
+    /// one as soon as its agent goes. Eight was enough only while that held; this leaves headroom
+    /// for the moment when many stale agents reconnect at once after the service restarts.
+    /// </remarks>
+    public const int MaxServerInstances = 16;
 
     /// <summary>
     /// Builds the pipe ACL: full control for SYSTEM and Administrators, connect rights for
