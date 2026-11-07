@@ -194,7 +194,7 @@ class SettingsScreen extends ConsumerWidget {
           const SizedBox(height: 16),
           Center(
             child: Text(
-              'PC Remote 0.2.0 · LAN, or your own VPN',
+              'PC Remote 0.3.0 · LAN, or your own VPN',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),

@@ -1,7 +1,7 @@
 name: remote_control_app
 description: Securely monitor and control your Windows PC over your local network.
 publish_to: "none"
-version: 0.2.0+1
+version: 0.3.0+2
 
 environment:
   sdk: ^3.12.0

@@ -270,7 +270,7 @@ class ConnectionController extends ChangeNotifier {
       final hello = await client.hello(
         deviceName: device.name,
         platform: device.platform,
-        appVersion: '0.2.0',
+        appVersion: '0.3.0',
       );
 
       if (superseded()) return;
